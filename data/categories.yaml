@@ -1,0 +1,38 @@
+categories:
+  transformer_basics:
+    title: Transformer 基础
+    keywords: [Transformer, Encoder, Decoder, FFN, MLP, 残差, 多头]
+  attention_kv_cache:
+    title: Attention 与 KV Cache
+    keywords: [Attention, Self-Attention, CrossAttention, MHA, MQA, GQA, KV Cache, MLA]
+  position_encoding:
+    title: 位置编码
+    keywords: [RoPE, 位置编码, ALiBi, Sinusoidal, NTK, 外推]
+  normalization_loss:
+    title: 归一化与 Loss
+    keywords: [LayerNorm, RMSNorm, BatchNorm, CrossEntropy, CE Loss, KL]
+  training_optimization:
+    title: 训练与优化
+    keywords: [Adam, AdamW, Muon, 学习率, warmup, 梯度, checkpoint, 并行]
+  post_training_rl:
+    title: 后训练与强化学习
+    keywords: [SFT, RLHF, DPO, PPO, GRPO, reward, advantage, preference]
+  moe_sparse:
+    title: MoE 与稀疏模型
+    keywords: [MoE, sparse, expert, router, top-k, load balance]
+  inference_serving:
+    title: 推理服务与性能
+    keywords: [推理, vLLM, serving, 量化, speculative decoding, 显存, 吞吐, 延迟]
+  rag_agent_tool:
+    title: RAG、Agent 与工具调用
+    keywords: [RAG, Agent, Claude Code, grep, retrieval, tool, MCP, function calling]
+  eval_alignment:
+    title: 评估与对齐
+    keywords: [评估, benchmark, hallucination, alignment, safety, reward model]
+  coding_questions:
+    title: 手撕代码
+    keywords: [手撕, 实现, PyTorch, CrossEntropyLoss, MLP, attention, 代码]
+  company_interviews:
+    title: 公司面经
+    keywords: [一面, 二面, 三面, HR, 字节, 阿里, 腾讯, 百度, 滴滴, 快手, 美团, 小红书]
+

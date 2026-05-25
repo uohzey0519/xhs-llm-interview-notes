@@ -1,0 +1,25 @@
+.DS_Store
+*.log
+*.tmp
+.env
+.env.local
+
+# Local browser/session artifacts should never be committed.
+data/raw/screenshots/
+data/raw/browser_exports/
+data/raw/cookies*
+
+# Generated intermediate files.
+data/processed/*.jsonl
+data/processed/*.sqlite
+data/raw/xhs_inventory_*.json
+data/raw/xhs_inventory_steps_*.jsonl
+data/raw/xhs_note_extracts_*.jsonl
+data/raw/xhs_extract_targets_*.tsv
+data/raw/xhs_discover_steps_*.jsonl
+data/raw/xhs_discover_inventory_*.json
+data/raw/xhs_discover_note_extracts_*.jsonl
+data/raw/xhs_discover_targets_*.tsv
+data/raw/xhs_discover_run_state_*.json
+build/
+dist/
