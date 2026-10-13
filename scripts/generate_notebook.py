@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import csv
+import argparse
 import json
 import os
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+
+from research_updates import MANIFEST, UPDATES, SOURCE_MAP, sync_curated_answers
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -367,6 +370,18 @@ TOPICS: list[Topic] = [
 ]
 
 
+# Research topics have no XHS matching patterns: primary sources are not note frequency.
+BASE_TOPIC_KEYS = {topic.key for topic in TOPICS}
+TOPICS = [
+    replace(topic, question=UPDATES[topic.key]["question"])
+    if topic.key in UPDATES else topic for topic in TOPICS
+]
+TOPICS.extend(
+    Topic(item["key"], item["question"], item["category"], item["difficulty"], (), "")
+    for item in MANIFEST["topics"] if item["kind"] == "new"
+)
+
+
 LLM_KEYWORDS = re.compile(
     r"(?i)(大模型|llm|大语言|transformer|attention|gqa|mqa|mla|kv ?cache|flash ?attention|"
     r"deepseek|qwen|llama|kimi|claude|codex|agent|rag|mcp|function call|sft|rlhf|vla|vlm|openvla|(?<![a-z])(dpo|ppo|grpo|dapo|gspo)(?![a-z])|"
@@ -623,6 +638,7 @@ def write_sources(rows: list[dict], row_topics: dict[str, list[Topic]], relevanc
 
 
 def write_question_bank(topic_sources: dict[str, list[dict]]) -> None:
+    topic_sources = with_research_topics(topic_sources)
     topics_by_key = {topic.key: topic for topic in TOPICS}
     rows = []
     for key, sources in topic_sources.items():
@@ -634,6 +650,7 @@ def write_question_bank(topic_sources: dict[str, list[dict]]) -> None:
         "# Question Bank",
         "",
         f"Generated: {TODAY}",
+        f"Research reviewed: {MANIFEST['reviewed_at']}; N/A means no XHS frequency measured.",
         "",
         "| Normalized Question | Category | Difficulty | Frequency | Sources | Status |",
         "|---|---|---|---:|---|---|",
@@ -642,12 +659,18 @@ def write_question_bank(topic_sources: dict[str, list[dict]]) -> None:
         sids = ", ".join(source_id(s["note_id"]) for s in sources[:12])
         if len(sources) > 12:
             sids += f", +{len(sources)-12}"
-        lines.append(f"| {topic.question} | {topic.category} | {topic.difficulty} | {len(sources)} | {sids} | ready |")
+        if topic.key in UPDATES:
+            refs = research_refs(topic.key)
+            sids = f"{sids}; {refs}" if sids else refs
+        frequency = str(len(sources)) if sources else "N/A"
+        status = "research-reviewed" if topic.key in UPDATES else "ready"
+        lines.append(f"| {topic.question} | {topic.category} | {topic.difficulty} | {frequency} | {sids} | {status} |")
     lines.append("")
     (REPO_ROOT / "data/processed/question_bank.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def write_master(topic_sources: dict[str, list[dict]], relevant_rows: list[dict], extracted_rows: list[dict]) -> None:
+    topic_sources = with_research_topics(topic_sources)
     topics_by_key = {topic.key: topic for topic in TOPICS}
     detailed_answers = read_detailed_answers()
     categories = [
@@ -676,6 +699,7 @@ def write_master(topic_sources: dict[str, list[dict]], relevant_rows: list[dict]
         "# 大模型面经八股整理",
         "",
         f"生成日期：{TODAY}",
+        f"研究增量核对：{MANIFEST['reviewed_at']}（小红书语料日期不变）",
         "",
         "## 概览",
         "",
@@ -683,7 +707,9 @@ def write_master(topic_sources: dict[str, list[dict]], relevant_rows: list[dict]
         f"- 标题初筛并打开抽取：{len(extracted_rows)} 条；后处理判定大模型相关：{len(relevant_rows)} 条。",
         f"- 发现页新增抽取：{len(discovery_rows)} 条；其中大模型相关：{len(discovery_relevant)} 条。",
         f"- 正文抽取状态：text-ok {status_counts['text-ok']} 条，title-only {status_counts['title-only']} 条。",
-        f"- 归一化问题簇：{len(topic_sources)} 个。频率按“不同来源笔记数”统计。",
+        f"- 归一化问题簇：{len(topic_sources)} 个，含 3 个独立研究专题；深化 6 个既有专题。",
+        "- 频率只统计不同小红书来源笔记数；新增研究专题标为 N/A，不混入原语料频率。",
+        "- 覆盖对照与去重说明：[研究增量审查](../docs/research_update_2026-10-13.md)。",
         "- 说明：不复制小红书原文全文；答案为基于来源要点和通用面试知识的整理。抽取不足的来源在 `sources.csv` 中保留状态。",
         "",
         "## 高频题 Top 20",
@@ -706,11 +732,16 @@ def write_master(topic_sources: dict[str, list[dict]], relevant_rows: list[dict]
             sids = ", ".join(source_id(s["note_id"]) for s in sources[:15])
             if len(sources) > 15:
                 sids += f", +{len(sources)-15}"
+            if topic.key in UPDATES:
+                refs = research_refs(topic.key)
+                sids = f"{sids}; 研究：{refs}" if sids else f"研究：{refs}"
+            frequency = str(len(sources)) if sources else "N/A（研究来源增补）"
             lines.extend(
                 [
+                    f'<a id="{topic.key}"></a>',
                     f"### {topic.question}",
                     "",
-                    f"- 频率：{len(sources)}",
+                    f"- 频率：{frequency}",
                     f"- 来源：{sids}",
                     f"- 难度：{topic.difficulty}",
                     "",
@@ -729,8 +760,70 @@ def write_master(topic_sources: dict[str, list[dict]], relevant_rows: list[dict]
     (REPO_ROOT / "notes/llm-interview-master.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def research_refs(key: str) -> str:
+    return ", ".join(f"[{sid}]({SOURCE_MAP[sid]['url']})" for sid in UPDATES[key]["sources"])
+
+
+def with_research_topics(topic_sources: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    result = dict(topic_sources)
+    for item in MANIFEST["topics"]:
+        if item["kind"] == "new":
+            result.setdefault(item["key"], [])
+    return result
+
+
+def regenerate_from_sources() -> None:
+    """Re-render public artifacts without raw text, reclassification, or new counts."""
+    with (REPO_ROOT / "data/processed/sources.csv").open(encoding="utf-8", newline="") as f:
+        saved = list(csv.DictReader(f))
+    if not saved:
+        raise SystemExit("sources.csv is empty; refusing to overwrite outputs")
+    rows, relevant_rows = [], []
+    topic_sources: dict[str, list[dict]] = defaultdict(list)
+    for saved_row in saved:
+        row = dict(saved_row)
+        row["extract_status"] = row["extraction_status"]
+        row["source_title"] = row["title"]
+        rows.append(row)
+        if row["is_llm_related"] != "yes":
+            continue
+        relevant_rows.append(row)
+        for key in row["matched_topics"].split(";"):
+            if key not in BASE_TOPIC_KEYS:
+                raise ValueError(f"unknown XHS topic key: {key}")
+            topic_sources[key].append(row)
+    summary = json.loads((REPO_ROOT / "data/processed/run_summary_2026-05-24.json").read_text(encoding="utf-8"))
+    if (len(rows), len(relevant_rows), len(topic_sources)) != (
+        summary["extracted"], summary["relevant"], summary["topics"]
+    ):
+        raise ValueError("public sources disagree with corpus snapshot")
+    sync_curated_answers()
+    write_question_bank(topic_sources)
+    write_master(topic_sources, relevant_rows, rows)
+    print(json.dumps({"mode": "from-sources", "xhs_rows": len(rows),
+                      "xhs_topics": len(topic_sources),
+                      "rendered_topics": len(with_research_topics(topic_sources))}, indent=2))
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--from-sources", action="store_true",
+                        help="Re-render from public sources.csv without changing XHS counts.")
+    args = parser.parse_args()
+    if args.from_sources:
+        regenerate_from_sources()
+        return
     rows = read_extracts()
+    if not rows:
+        raise SystemExit("No raw extracts. Use --from-sources for the public checkout; no outputs changed.")
+    # Incomplete private downloads must not silently delete the published corpus.
+    sources_path = REPO_ROOT / "data/processed/sources.csv"
+    if sources_path.exists():
+        with sources_path.open(encoding="utf-8", newline="") as f:
+            existing_ids = {row["note_id"] for row in csv.DictReader(f)}
+        if not existing_ids.issubset({row["note_id"] for row in rows}):
+            raise SystemExit("Raw extracts omit existing notes; no outputs changed. Use --from-sources.")
+    sync_curated_answers()
     relevance = {row["note_id"]: is_relevant(row) for row in rows}
     row_topics = {row["note_id"]: match_topics(row) if relevance[row["note_id"]] else [] for row in rows}
     topic_sources: dict[str, list[dict]] = defaultdict(list)
@@ -766,6 +859,7 @@ def main() -> None:
         encoding="utf-8",
     )
     update_detailed_answers_header(summary)
+    sync_curated_answers()
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

@@ -11,7 +11,40 @@ This repo organizes Xiaohongshu notes related to large-model interview preparati
 - `skills/xhs-llm-interview-notes/SKILL.md`: reusable Codex skill for future incremental updates.
 - `docs/goal_plan.md`: copy-paste goal plan for rerunning the full workflow in another Codex thread.
 
-## Corpus Snapshot
+## Research Update — 2026-10-13
+
+The notebook now has **45 question clusters**: the 42-cluster XHS baseline plus
+3 primary-source research topics. Six existing answers were substantially expanded.
+The original 1,508 extracted / 1,199 relevant note counts and XHS frequencies are unchanged.
+
+- New: GLM-family SAO, Attention Residuals, and DeepSeek-V4.1-Flash CED/CSA2.
+- Expanded: MLA, RoPE/NoPE, long-horizon credit assignment, Agent RL,
+  sparse/linear/Delta attention, and Agent evaluation.
+- Every updated topic includes principles, formulas, code or labeled pseudocode,
+  tradeoffs, answered follow-ups, and primary-source references.
+- [Coverage review and deduplication decisions](docs/research_update_2026-10-13.md)
+  map all 42 original clusters to the update.
+- Curated answer source: [data/research/answers.md](data/research/answers.md).
+  Provenance: [data/research/sources.json](data/research/sources.json).
+
+For a **public checkout without private raw extracts**, use:
+
+```bash
+python3 scripts/enrich_detailed_answers.py
+python3 scripts/generate_notebook.py --from-sources
+python3 scripts/verify_outputs.py
+python3 -m unittest discover -s tests -v
+```
+
+The CPU numerical tests require NumPy; generation and structural verification use
+the Python standard library. The generator refuses missing/incomplete raw exports
+before changing outputs. Research sources are tracked separately from XHS notes;
+new research topics have frequency N/A.
+
+The examples validate teaching identities and edge cases, not full model training
+or published benchmark results. Research sections survive repeated enrichment.
+
+## Corpus Snapshot (original XHS extraction)
 
 Run date: 2026-05-24
 
@@ -57,7 +90,7 @@ Raw extraction artifacts under `data/raw/xhs_*` are local and gitignored because
 
 For local favorites inventory, copy `.env.example` to `.env` and set either `XHS_FAVORITES_URL` or `XHS_PROFILE_ID`. Public output hides personal favorite order and profile-note URLs by default. Use `XHS_INCLUDE_PERSONAL_ORDER=1` or `XHS_INCLUDE_COLLECT_URL=1` only for private local reports.
 
-## Update Flow
+## Private Extraction Update Flow
 
 From the repo root:
 

@@ -9,6 +9,7 @@ Each `## <topic_key>` section is injected into `notes/llm-interview-master.md`.
 |---|---|---:|---:|---:|---:|---:|---|
 | v1.0 | 2026-05-24 | Favorites accessible set: 315 extracted | 204 | 36 | 204 | 36 | Initial favorite-note notebook with detailed answers. |
 | v1.1 | 2026-05-25 | Discovery/search: 1193 extracted | 995 | 6 | 1199 | 42 | Added discovery/search evidence, promoted recurring themes to topics, and expanded per-question detailed answers. |
+| v1.2 | 2026-10-13 | Primary-source research; no new XHS rows | 0 | 3 | 1199 | 45 | Deepened 6 clusters; added SAO, AttnRes and CED/CSA2. |
 
 Last corpus refresh: 2026-05-25T17:56:57+08:00
 
@@ -17,12 +18,15 @@ Current processed corpus:
 - Strictly related notes: 1199
 - Favorites related: 204
 - Discovery/search related: 995
-- Normalized topic sections: 42
+- Normalized topic sections: 45 (42 XHS baseline + 3 research topics)
 
 Frequency counts, source IDs, and discovery deltas are regenerated in `notes/llm-interview-master.md`, `data/processed/question_bank.md`, `data/processed/sources.csv`, and `docs/discovery_delta_report_2026-05-25.md`.
 The answer bodies below are intentionally preserved across runs unless a topic's question wording or explanation needs to change.
 
+Research refresh: 2026-10-13. Curated bodies in data/research/answers.md override nine sections; XHS corpus counts and last corpus refresh are unchanged.
+
 ## transformer_arch
+
 **面试官常问：**
 
 1. Transformer 的 Q/K/V 分别是什么？Self-Attention 的完整计算流程是什么？
@@ -107,6 +111,7 @@ LLM 更偏向 Transformer 的原因有三点：第一，训练可并行，长文
 面试可以这样收束：head 数不是越多越好，要在表达多样性、head_dim、KV cache、吞吐和训练稳定性之间折中。
 
 ## param_flops
+
 **面试官常问：**
 
 1. 给一个 7B/13B 模型，如何估算参数显存、训练显存和 KV Cache？
@@ -223,116 +228,94 @@ $$
 Adam 训练还要考虑参数、梯度、一阶/二阶动量和可能的 FP32 master weight。激活粗略随 `B * T * L * hidden` 增长，checkpointing 省激活，ZeRO 切 optimizer/grad/param，tensor parallel 切层内矩阵。
 
 ## rope_position
+
 **面试官常问：**
 
-1. RoPE 的数学形式是什么？为什么说它天然包含相对位置信息？
-2. RoPE 为什么比绝对位置编码更容易做长度外推？
-3. NTK scaling、YaRN、位置插值分别想解决什么问题？
-4. Qwen/LLaMA 的 RoPE 实现差异常体现在哪里？
+1. RoPE 为什么让注意力包含相对位置，但不保证无限长度外推？
+2. NoPE 是没有显式位置编码，还是完全没有顺序信息？
+3. 为什么对完整 MLA key 施加 RoPE 会破坏简单矩阵吸收？
+4. 解耦 RoPE 的内容分支与位置分支分别缓存什么？
 
-RoPE 的核心直觉：不要把位置简单加到 token embedding 上，而是对 Q/K 的偶数维二维子空间做旋转。位置 `m` 的旋转矩阵是 `R_m`，注意力分数中会出现：
+### 原理与关键公式
 
-$$
-(R_m q)^T (R_n k) = q^T R_{n-m} k
-$$
-
-所以分数天然依赖相对距离 `n-m`，这就是 RoPE 比绝对位置 embedding 更适合长度外推的原因之一。对每一对维度 `(2i, 2i+1)`：
+答：RoPE 对 Q/K 的二维子空间施加位置相关旋转；对列向量有：
 
 $$
-\begin{aligned}
-\theta_i &= base^(-2i / d) \\
-x'_2i &= x_2i \cdot  cos(m \theta_i) - x_2i+1 \cdot  sin(m \theta_i) \\
-x'_{2i+1} &= x_2i \cdot  sin(m \theta_i) + x_2i+1 \cdot  cos(m \theta_i)
-\end{aligned}
+R_t=
+\begin{bmatrix}
+\cos(t\omega)&-\sin(t\omega)\\
+\sin(t\omega)&\cos(t\omega)
+\end{bmatrix},\qquad
+(R_tq)^\top(R_jk)=q^\top R_{j-t}k.
 $$
 
-PyTorch 版实现：
+它把相对位移写入打分结构，但训练长度、频率谱、数据和任务仍限制泛化。位置插值缩放位置，NTK 类方法调整频率尺度，YaRN 组合频率与 attention scaling；不要把某个模型家族固定等同于某一种维度排列。交错配对与前后半维配对在权重也相应重排时可等价，直接混用 checkpoint 则不等价。多模态位置还需说明轴、patch 网格及文本位置如何衔接。[R04,R10]
+
+**NoPE** 表示不加显式位置向量/旋转，并不删除 causal mask。双向、无位置的标准 self-attention 具有置换等变性；因果可见集合、边界 token 和多层组合会打破这种简单对称，因此 decoder-only NoPE 可以学习位置相关行为。不能推断任意一层、任意重复 token 都能恢复绝对序号，也不能把特定合成任务上的外推结果推广为所有任务优于 RoPE。[R05]
+
+在 MLA 内容路径上，若完整 key 被旋转：
+
+$$
+(R_tq)^\top R_jU_Kc_j
+=q^\top R_{j-t}U_Kc_j.
+$$
+
+投影前出现随历史位置 $j$ 变化的矩阵，不能再用一个与 $j$ 无关的 query 吸收它。旋转和一般的上投影不满足所需交换关系。解耦方法把打分拆成两部分：
+
+$$
+\ell_{tj,i}=
+\frac{(U_{K,i}^{\top}q_{t,i}^{C})^\top c_j+
+(q_{t,i}^{R})^\top k_j^{R}}{\sqrt{d_k+d_R}},
+\quad
+q_{t,i}^{R}=R_t\bar q_{t,i}^{R},\quad
+k_j^{R}=R_j\bar k_j^{R}.
+$$
+
+只缓存内容 latent $c_j$ 和共享位置 key $k_j^R$。内容子空间不加旋转，可保留吸收；额外的位置分支承担相对位置。这里的“内容 NoPE 分支”**不是宣称整个模型为 NoPE**。[R03]
+
+### 代码或伪代码
 
 ```python
-import torch
+import numpy as np
 
-def apply_rope(x, cos, sin):
-    # x: [B, H, T, D], cos/sin: [T, D/2]
-    x1 = x[..., 0::2]
-    x2 = x[..., 1::2]
-    cos = cos[None, None, :, :]
-    sin = sin[None, None, :, :]
-    y1 = x1 * cos - x2 * sin
-    y2 = x1 * sin + x2 * cos
-    return torch.stack((y1, y2), dim=-1).flatten(-2)
-
-def build_rope_cache(seq_len, dim, base=10000.0, device="cpu"):
-    inv_freq = base ** (-torch.arange(0, dim, 2, device=device).float() / dim)
-    pos = torch.arange(seq_len, device=device).float()
-    freqs = torch.einsum("t,d->td", pos, inv_freq)
-    return freqs.cos(), freqs.sin()
+def rotate_pairs(x, position, frequencies):
+    # x:[...,2m], frequencies:[m]; adjacent-pair convention
+    x = np.asarray(x)
+    pairs = x.reshape(*x.shape[:-1], -1, 2)
+    angles = position * np.asarray(frequencies)
+    co, si = np.cos(angles), np.sin(angles)
+    a, b = pairs[..., 0], pairs[..., 1]
+    return np.stack((a * co - b * si, a * si + b * co),
+                    axis=-1).reshape(x.shape)
 ```
 
-长上下文扩展的常见手法包括 position interpolation、NTK scaling、YaRN 等，本质都是调整频率或位置映射，避免高频维度在远距离上相位变化过快。Qwen/LLaMA 的差异通常体现在 `rope_theta/base`、是否使用缩放、最大上下文训练长度、实现中是否对不同频段做特殊处理。面试不要死背某个版本参数，应该说清：RoPE 通过旋转让相对距离进入 QK 点积，扩长上下文时要处理频率分布和训练长度外的泛化。
+### 技术取舍
 
-### 高频追问补充
+完整 RoPE 提供强位置结构但使简单 latent 吸收困难；解耦保留小型显式位置通道，并引入额外 cache。NoPE 去掉显式机制，顺序学习与长度泛化更依赖数据及结构。比较时同时测原长度、目标长上下文、精确检索、顺序敏感任务和 KV 成本，不能只测一个 needle。
 
-#### 1. RoPE 外推失败时通常是高频维度出问题还是低频维度出问题？
+### 深入追问
 
-答：RoPE 外推失败本质是训练没见过更大的相位范围，高频维度更容易在长距离上相位旋转过快，导致相对位置关系失真。
+#### 1. 直接把旋转作用到 r 维 latent，是否就解决问题？
 
-RoPE 的外推本质是训练时没见过更大的相位范围。缩放位置或频率可以让长距离相位变化慢下来，但也会改变训练长度内的相对距离分布，所以可能影响短文本。多模态场景里要区分一维文本位置、二维视觉位置和跨模态拼接位置，常见做法是视觉侧用 2D position 或 patch embedding，进入 LLM 后再统一成序列位置；面试重点是说明位置编码服务于“让模型知道 token 顺序/空间关系”，而不是死背某个实现。
+答：这是另一个模型参数化。只有存在满足 $R_jU_K=U_K\widetilde R_j$ 等关系的特殊结构，才可与原完整旋转等价；一般矩阵不满足。需要训练验证，不能靠矩阵乘法换序宣称等价。
 
-RoPE 可理解为把每对 hidden 维旋转一个与位置有关的角度：
+#### 2. 外推失败一定是高频维度的问题吗？
 
-$$
-q_m = R(m\theta)q,\quad k_n = R(n\theta)k
-$$
+答：不一定。频率、相位覆盖与 attention 分布都有关，低频未充分训练同样可能出问题。应对频段、长度和任务做消融，而不是给出单一频段的通用归因。
 
-内积会包含相对距离：
+#### 3. MLA 内容路径无 RoPE，怎么还能区分两个内容相同的位置？
 
-$$
-q_m^T k_n = q^T R((n-m)\theta)k
-$$
+答：总分还包括显式位置分支，且 hidden state 本身受历史影响。区分能力来自联合表示；位置分支过窄是否损害顺序任务需实测。
 
-长上下文缩放改变的是相位增长速度；回答时要同时说收益是外推，代价是训练长度内的位置分布被改变。
+### 研究来源
 
-#### 2. NTK scaling、YaRN、位置插值为什么有时会牺牲短上下文效果？
-
-答：NTK scaling、YaRN、位置插值会改变训练长度内的相对距离分布，所以长上下文变好时，短上下文可能因为位置尺度被压缩而轻微掉点。
-
-RoPE 的外推本质是训练时没见过更大的相位范围。缩放位置或频率可以让长距离相位变化慢下来，但也会改变训练长度内的相对距离分布，所以可能影响短文本。多模态场景里要区分一维文本位置、二维视觉位置和跨模态拼接位置，常见做法是视觉侧用 2D position 或 patch embedding，进入 LLM 后再统一成序列位置；面试重点是说明位置编码服务于“让模型知道 token 顺序/空间关系”，而不是死背某个实现。
-
-RoPE 可理解为把每对 hidden 维旋转一个与位置有关的角度：
-
-$$
-q_m = R(m\theta)q,\quad k_n = R(n\theta)k
-$$
-
-内积会包含相对距离：
-
-$$
-q_m^T k_n = q^T R((n-m)\theta)k
-$$
-
-长上下文缩放改变的是相位增长速度；回答时要同时说收益是外推，代价是训练长度内的位置分布被改变。
-
-#### 3. 多模态/VLA/VLM 里把图像 patch 和文本 token 混在一起时，位置编码怎么处理？
-
-答：多模态里要同时处理文本一维顺序、图像二维空间、视频时间和跨模态拼接位置，不能简单把所有 patch 当成普通文本 token 位置。
-
-RoPE 的外推本质是训练时没见过更大的相位范围。缩放位置或频率可以让长距离相位变化慢下来，但也会改变训练长度内的相对距离分布，所以可能影响短文本。多模态场景里要区分一维文本位置、二维视觉位置和跨模态拼接位置，常见做法是视觉侧用 2D position 或 patch embedding，进入 LLM 后再统一成序列位置；面试重点是说明位置编码服务于“让模型知道 token 顺序/空间关系”，而不是死背某个实现。
-
-RoPE 可理解为把每对 hidden 维旋转一个与位置有关的角度：
-
-$$
-q_m = R(m\theta)q,\quad k_n = R(n\theta)k
-$$
-
-内积会包含相对距离：
-
-$$
-q_m^T k_n = q^T R((n-m)\theta)k
-$$
-
-长上下文缩放改变的是相位增长速度；回答时要同时说收益是外推，代价是训练长度内的位置分布被改变。
+- [R03](https://arxiv.org/html/2405.04434v5): DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model — Section 2.1, Multi-Head Latent Attention and Decoupled Rotary Position Embedding（核对：2026-10-13）。
+- [R04](https://arxiv.org/abs/2104.09864): RoFormer: Enhanced Transformer with Rotary Position Embedding — Rotary position embedding formulation（核对：2026-10-13）。
+- [R05](https://arxiv.org/abs/2305.19466v2): The Impact of Positional Encoding on Length Generalization in Transformers — Abstract and stated scope of decoder-only length-generalization experiments（核对：2026-10-13）。
+- [R10](https://arxiv.org/abs/2309.00071): YaRN: Efficient Context Window Extension of Large Language Models — RoPE context extension; interpolation and scaling motivation（核对：2026-10-13）。
 
 ## norms
+
 **面试官常问：**
 
 1. LayerNorm 和 RMSNorm 的公式有什么区别？为什么 LLM 常用 RMSNorm？
@@ -443,6 +426,7 @@ $$
 Pre-Norm 子层通常是 `x + Sublayer(Norm(x))`，Post-Norm 是 `Norm(x + Sublayer(x))`。深层 LLM 偏 Pre-Norm，因为残差路径更利于梯度传播。
 
 ## cross_entropy
+
 **面试官常问：**
 
 1. CrossEntropyLoss 为什么通常直接接 logits，而不是先 softmax？
@@ -485,7 +469,7 @@ import torch
 def cross_entropy_from_logits(logits, target):
     # logits: [N, C], target: [N]
     shifted = logits - logits.max(dim=-1, keepdim=True).values
-    log_z = torch.\log(torch.exp(shifted).sum(dim=-1))
+    log_z = torch.log(torch.exp(shifted).sum(dim=-1))
     correct = shifted[torch.arange(logits.size(0)), target]
     return (log_z - correct).mean()
 
@@ -570,6 +554,7 @@ $$
 SFT 中常把非 assistant token 的 label 置为 `-100`。MTP 可写为 `L = L_next + sum_k lambda_k L_{t+k}`，label smoothing 则把 one-hot 改成软标签。
 
 ## loss_spike
+
 **面试官常问：**
 
 1. LLM 训练中 loss spike 可能由哪些原因导致？
@@ -663,6 +648,7 @@ if not torch.isfinite(loss) or grad_norm > threshold:
 ```
 
 ## mlp_training
+
 **面试官常问：**
 
 1. 请手推两层 MLP 的 forward/backward/update。
@@ -798,6 +784,7 @@ dW1 = X.T @ dZ1
 ```
 
 ## sft_rl_kl
+
 **面试官常问：**
 
 1. 为什么常说 SFT 更像正向 KL，RL 更像反向 KL？
@@ -903,6 +890,7 @@ $$
 在偏好/RL 约束中更强调别偏离参考策略。DPO 常见目标里 beta 控制偏离强度，beta 越大越保守，越小越激进。
 
 ## post_training_methods
+
 **面试官常问：**
 
 1. SFT、RLHF/PPO、DPO、GRPO 的数据形式和训练目标分别是什么？
@@ -980,6 +968,7 @@ DAPO/GSPO 等名字不要只背缩写，回答时落到它们想解决的问题�
 面试可以举例：数学题只有最终对错时可以做 outcome reward；代码题可以跑测试得到可验证 reward；搜索 Agent 需要检查 query、点击、引用和最终答案，最好结合过程奖励。
 
 ## grpo_core
+
 **面试官常问：**
 
 1. GRPO 的 group relative advantage 怎么算？
@@ -1046,6 +1035,7 @@ $$
 DPO 成本低、稳定、适合已有偏好数据；GRPO 更适合有环境反馈、规则验证或在线采样的任务，比如数学、代码、工具 Agent，但训练更敏感。
 
 ## grpo_metrics
+
 **面试官常问：**
 
 1. GRPO 训练时必须监控哪些 reward、policy 和质量指标？
@@ -1143,87 +1133,91 @@ $$
 因此 reward std 过低会让优势失效。监控表至少包含 `reward_mean/std`、`kl`、`entropy`、`clip_fraction`、`response_len`、`format_acc`、`tool_success`、`pass_rate`。
 
 ## reward_advantage_prm
+
 **面试官常问：**
 
-1. Agentic RL 里最终奖励和过程奖励有什么区别？
-2. PRM 应该给哪些中间步骤打分？如何避免 reward hacking？
-3. token-level advantage 如何从 step reward 或 trajectory reward 分配？
-4. 工具调用型 Agent 的 reward 应该包含哪些维度？
+1. 80 步任务在第 79 步失败、终奖为零，是否会把前 78 步全都“惩罚”？
+2. PPO 的 critic、GRPO 的组基线和 PRM 分别解决什么？
+3. 多轮轨迹中工具返回 token 是否参与 actor loss 和 GAE？
+4. 过程奖励怎样避免奖励冗长、重复试错与投机？
 
-Agentic RL 的难点是信用分配。最终 reward 只告诉“整条轨迹是否成功”，但轨迹包含规划、工具调用、观察、反思和最终回答。可以把总 reward 写成：
+### 原理与关键公式
 
-$$
-R = w_task R_task + w_format R_format + w_tool R_tool + w_safe R_safe - w_cost Cost
-$$
-
-过程奖励 PRM 给中间步骤打分，例如每次工具调用参数是否正确、检索证据是否支持结论、代码执行是否通过测试。Token-level advantage 则要把 step 或 trajectory reward 分配回 token：
+答：终奖只有一个数，**梯度符号由优势决定**，不是由“失败”这个词决定。忽略其他正则项，策略梯度为：
 
 $$
-\begin{aligned}
-A_token_t &= A_step_j, if token t belongs to step j \\
-或 A_token_t &= discounted_future_reward_t - baseline_t
-\end{aligned}
+\nabla_\theta J
+=\mathbb E\!\left[\sum_{t\in\mathcal A}
+\nabla_\theta\log\pi_\theta(a_t\mid h_t)\widehat A_t\right].
 $$
 
-一个简单分配方式：
+$\mathcal A$ 只包括模型动作 token，$h_t$ 是含观测的历史。无 baseline 的 REINFORCE 若整条回报为 0，任务梯度可为 0；有 critic 时 $G_t-V(h_t)$ 可能为负；组归一化 GRPO 若同组有成功轨迹，失败轨迹优势通常为负，若全组同分则任务优势为 0。KL、熵等项仍可能产生梯度。不能说所有 PPO/GRPO 都等强度惩罚每一步。
+
+GAE 用局部 TD 残差组合估计：
+
+$$
+\delta_t=r_t+\gamma(1-d_t)V(h_{t+1})-V(h_t),\qquad
+\widehat A_t=\delta_t+\gamma\lambda(1-d_t)\widehat A_{t+1}.
+$$
+
+$d_t$ 表示真实终止。取 $\lambda=1$、精确终止 bootstrap、$\gamma=1$ 时可退化为 $G_t-V(h_t)$；critic 并不自动知道“究竟哪一步错了”，它只估计条件期望，错误价值函数也会错误归因。[R08,R09]
+
+**教学反例**：三个动作的 critic 预测分别为 $0.2,0.8,0.1$，最终奖励为 0。令 $\gamma=1,\lambda=0$，优势为 $[0.6,-0.7,-0.1]$；失败轨迹上的第一个动作仍可具有正估计优势。这不是证明动作一定正确，而是说明“终奖 0 ⇒ 每步必负”不成立。
+
+Skip-observation GAE 把递推索引移到相邻**动作 token**。工具输出仍进入下一动作的上下文；只是不给外部文字计算 actor logprob loss，也不沿其每个 token 传播 GAE。观测越长，不应凭空引入更多折扣步。真正终止置 bootstrap 为 0；训练分片/时间截断若代表可继续的任务，通常保留价值 bootstrap。若预算耗尽本身就是任务定义的失败终点，则按终止处理。[R01]
+
+### 代码或伪代码
 
 ```python
-def assign_step_reward_to_tokens(step_rewards, step_token_spans, total_tokens):
-    adv = [0.0] * total_tokens
-    for reward, (lo, hi) in zip(step_rewards, step_token_spans):
-        length = \max(hi - lo, 1)
-        for t in range(lo, hi):
-            adv[t] = reward / length
-    return adv
+import numpy as np
+
+def action_gae(rewards, values, terminated, bootstrap=0.0,
+               gamma=1.0, lam=0.95):
+    # Arrays contain action-token positions only, for one trajectory.
+    # values[i] conditions on all prior observations.
+    r, v = np.asarray(rewards, float), np.asarray(values, float)
+    done = np.asarray(terminated, bool)
+    if r.ndim != 1 or r.shape != v.shape or r.shape != done.shape:
+        raise ValueError("one aligned action-token trajectory is required")
+    advantages = np.zeros_like(r)
+    carry = 0.0
+    for i in range(len(r) - 1, -1, -1):
+        next_value = float(bootstrap) if i == len(r) - 1 else v[i + 1]
+        keep = float(not done[i])
+        delta = r[i] + gamma * keep * next_value - v[i]
+        carry = delta + gamma * lam * keep * carry
+        advantages[i] = carry
+    return advantages, advantages + v
 ```
 
-设计 PRM 时要防 reward hacking：如果只奖励“调用了工具”，模型会乱调用；如果只奖励“答案长”，模型会变啰嗦。实践中要多维奖励、约束工具白名单、失败轨迹采样、人工抽检，并把 reward model 的输入限定为可验证证据。
+### 技术取舍
 
-### 高频追问补充
+ORM 给终局反馈，PRM 给中间步骤反馈，critic 预测未来回报，三者并非同一对象。仅终奖简单但方差大；PRM 更密集但容易产生偏好噪声和 reward hacking。将一个 step reward 除以 token 数后复制，不等于 GAE，且会改变长度加权。应明确 token mean、sequence mean、episode sum 的目标区别。
 
-#### 1. PRM 和 ORM 的区别是什么？为什么 Agent 任务更需要过程奖励？
+工程建议：优先使用可执行的中间证据，如验证测试、数据库约束及状态检查；把成本、违规率与成功率分开报告。不要奖励“说自己验证了”，也不要因多写反思、多调工具就给正分。训练用 grader 与封存评测 grader 应隔离；持有集持续退化时，即使训练奖励上升也应停查。
 
-答：ORM 只评价最终答案，PRM 评价中间步骤；Agent 多步任务需要 PRM 来判断计划、检索、工具调用和反思哪一步贡献了成败。
+### 深入追问
 
-ORM 只评价最终答案，PRM 评价中间步骤。Agent 任务包含搜索、工具调用、反思、重试，最终对错很难告诉哪一步贡献最大，所以需要过程奖励做信用分配。token-level advantage 可以按步骤边界均摊，也可以用价值模型/奖励模型逐步估计；同时要对长度、重复、无效工具调用加惩罚，否则模型可能通过堆步骤拿过程分。
+#### 1. 为什么不只保留前 78 步作为成功训练样本？
 
-把 step reward 分配到 token 的一个简单方式：
+答：无法仅凭“错误发生得晚”确认前缀正确；早期动作可能埋下问题。可在可恢复环境中从前缀重采样、验证不同后续，估计条件成功率；这增加环境和 rollout 成本，也不是无代价的真实反事实。
 
-$$
-A_t = R_{step(i)},\quad t\in tokens(step_i)
-$$
+#### 2. 更小的 lambda 一定更适合长任务吗？
 
-更细的方法是训练 value/reward model 估计每个状态或 token 的优势。PRM 要配合最终结果校验，否则会奖励“看起来努力”的长轨迹。
+答：小 lambda 更依赖 critic、偏差可能增大；大 lambda 更接近蒙特卡洛、方差和长跨度噪声更大。需同时检查 value error、优势分布及长任务成功率。
 
-#### 2. token-level advantage 如何从 step-level reward 分配回来？
+#### 3. SAO 是否彻底解决长程信用分配？
 
-答：step-level reward 可以按步骤边界均摊给该步骤 token，也可以训练 value/reward model 给每个 token 或 span 估计 advantage。
+答：没有。它提供适合异步、多轮轨迹的估计与稳定化设计；价值模型误差、探索不足和奖励缺陷仍在，相关系统问题见 agentic_rl_self_evolution。
 
-ORM 只评价最终答案，PRM 评价中间步骤。Agent 任务包含搜索、工具调用、反思、重试，最终对错很难告诉哪一步贡献最大，所以需要过程奖励做信用分配。token-level advantage 可以按步骤边界均摊，也可以用价值模型/奖励模型逐步估计；同时要对长度、重复、无效工具调用加惩罚，否则模型可能通过堆步骤拿过程分。
+### 研究来源
 
-把 step reward 分配到 token 的一个简单方式：
-
-$$
-A_t = R_{step(i)},\quad t\in tokens(step_i)
-$$
-
-更细的方法是训练 value/reward model 估计每个状态或 token 的优势。PRM 要配合最终结果校验，否则会奖励“看起来努力”的长轨迹。
-
-#### 3. 如何避免过程奖励鼓励模型写更多无用步骤？
-
-答：过程奖励要惩罚无效步骤、重复搜索、无意义反思和过长轨迹，否则模型会学会堆步骤而不是解决任务。
-
-ORM 只评价最终答案，PRM 评价中间步骤。Agent 任务包含搜索、工具调用、反思、重试，最终对错很难告诉哪一步贡献最大，所以需要过程奖励做信用分配。token-level advantage 可以按步骤边界均摊，也可以用价值模型/奖励模型逐步估计；同时要对长度、重复、无效工具调用加惩罚，否则模型可能通过堆步骤拿过程分。
-
-把 step reward 分配到 token 的一个简单方式：
-
-$$
-A_t = R_{step(i)},\quad t\in tokens(step_i)
-$$
-
-更细的方法是训练 value/reward model 估计每个状态或 token 的优势。PRM 要配合最终结果校验，否则会奖励“看起来努力”的长轨迹。
+- [R01](https://arxiv.org/html/2607.07508v1): Single-Rollout Asynchronous Optimization for Agentic Reinforcement Learning — Sections 3.1–3.2; equations 1–5; Section 4.1（核对：2026-10-13）。
+- [R08](https://arxiv.org/abs/1707.06347): Proximal Policy Optimization Algorithms — Clipped surrogate objective（核对：2026-10-13）。
+- [R09](https://arxiv.org/abs/1506.02438): High-Dimensional Continuous Control Using Generalized Advantage Estimation — Generalized advantage estimation（核对：2026-10-13）。
 
 ## sft_to_rl
+
 **面试官常问：**
 
 1. 怎么判断 SFT 模型已经可以开始做 RL？
@@ -1293,6 +1287,7 @@ SFT 是 RL 的地基。如果模型连格式、任务理解、基础正确率都
 常见修复：去重、减少模板、混入通用指令数据、降低学习率、缩短训练轮数、加入 chosen/rejected 负例。
 
 ## distillation
+
 **面试官常问：**
 
 1. 大模型蒸馏给小模型有哪些蒸馏目标？logits、答案、偏好有什么区别？
@@ -1375,6 +1370,7 @@ $$
 文本蒸馏只看教师输出文本，隐藏层蒸馏对齐中间表示。on-policy 蒸馏更贴近学生部署分布，但采样和评价成本更高。
 
 ## moe
+
 **面试官常问：**
 
 1. MoE 和 Dense FFN 的核心区别是什么？为什么 MoE 能扩大总参数？
@@ -1465,6 +1461,7 @@ $$
 不是由总专家数直接决定。负载均衡常看每个专家 token 数、routing entropy、capacity overflow、token drop 和 all-to-all 时间。
 
 ## moe_rl
+
 **面试官常问：**
 
 1. 为什么 RL 后训练会让 MoE 更容易出现专家负载不均？
@@ -1498,7 +1495,7 @@ import torch
 def moe_routing_stats(router_probs, top1_idx, num_experts):
     load = torch.bincount(top1_idx.flatten(), minlength=num_experts).float()
     load = load / load.sum().clamp_min(1)
-    entropy = -(router_probs * router_probs.clamp_min(1e-9).\log()).sum(dim=-1).mean()
+    entropy = -(router_probs * router_probs.clamp_min(1e-9).log()).sum(dim=-1).mean()
     return {
         "load_min": load.min().item(),
         "load_max": load.max().item(),
@@ -1554,6 +1551,7 @@ $$
 RL 后如果 reward 上升但 routing entropy 下降、少数专家 token 数暴涨，就要警惕专家塌缩。
 
 ## gqa_kv_cache
+
 **面试官常问：**
 
 1. 为什么自回归推理只缓存 K/V，不缓存 Q？
@@ -1637,90 +1635,92 @@ $$
 MHA、GQA、MQA 的主要差别就是 `H_kv`。Q 是当前步临时算出来的，不需要缓存历史 Q；K/V 是历史上下文，decode 每步都要复用。
 
 ## mla_deepseek
+
 **面试官常问：**
 
-1. MLA 和 MQA/GQA 都在压缩 KV Cache，它们压缩的维度有什么不同？
-2. MLA 的 latent KV 表示大概怎么写？
-3. MLA 为什么能降低长上下文显存？代价是什么？
-4. MLA 和量化能不能叠加？分别省什么？
+1. MLA 如何联合压缩 K/V，为什么不是分别压缩两个独立矩阵？
+2. 低秩是否无损？缓存变小以后为什么仍需要大投影矩阵？
+3. 怎样通过矩阵吸收，在 decode 时避免恢复全部历史 K/V？
+4. 与 MHA、GQA、KV 量化如何比较，RoPE 会引入什么障碍？
 
-MLA 可以理解为比 GQA 更进一步的 KV 压缩思路：不是只减少 KV head 数，而是把 K/V 先压到低维 latent，再在需要时恢复或参与注意力。一个抽象写法：
+### 原理与关键公式
+
+答：MLA 学习一个同时支撑各头 K/V 的共享潜向量。以下固定使用**列向量**，忽略 batch；$h_t\in\mathbb R^d$、$c_t\in\mathbb R^r$、每头 key/value 维度为 $d_k,d_v$：
 
 $$
-\begin{aligned}
-c_t &= x_t W_DKV          # low-rank latent, dim = d_c \\
-k_t &= c_t W_UK \\
-v_t &= c_t W_UV \\
-cache c_t instead of full k_t/v_t
-\end{aligned}
+c_t=D h_t,\qquad
+k_{t,i}^{C}=U_{K,i}c_t,\qquad v_{t,i}=U_{V,i}c_t.
 $$
 
-如果原始 KV cache 维度是 `kv_heads * head_dim * 2`，latent 维度 `d_c` 远小于它，就能节省显存。和 MQA/GQA 对比：
+$D\in\mathbb R^{r\times d}$，$U_{K,i}\in\mathbb R^{d_k\times r}$，$U_{V,i}\in\mathbb R^{d_v\times r}$。联合压缩让所有头的 K/V 共享缓存 $c_t$；它不要求 K 与 V 相同。低秩约束约束的是联合线性映射的秩，并非“把任意训练好的 MHA 无损压成 MLA”。只有原映射存在相应秩的因子分解等条件满足时，替换才可能精确；通常应联合训练并评估能力。
 
-```text
-MQA/GQA: 减少 KV heads
-MLA:    减少每个 token 需要缓存的表示维度
-```
+吸收是**同一个 MLA 模型内部的代数等价变形**：
 
-概念代码：
+$$
+(q_{t,i}^{C})^\top U_{K,i}c_j
+ = (U_{K,i}^{\top}q_{t,i}^{C})^\top c_j,\qquad
+\sum_{j\le t}a_{tj,i}U_{V,i}c_j
+ =U_{V,i}\sum_{j\le t}a_{tj,i}c_j.
+$$
+
+令 $z_{t,i}=\sum_j a_{tj,i}c_j$，输出为
+$o_t=\sum_i O_i U_{V,i}z_{t,i}$。key 上投影可移到当前 query，value 上投影可移到聚合之后并与输出投影结合。**等价计算不意味着低秩建模无损。** prefill 可能因 GEMM 效率采用展开路径，decode 则偏好节省 KV 读取；实际实现应分别 benchmark。
+
+忽略 allocator、量化 scale 和对齐，仅计算单层单 token 缓存元素数：
+
+$$
+MHA:2Hd_k,\quad GQA:2H_{KV}d_k,\quad
+MLA:r+d_R\quad(d_v=d_k).
+$$
+
+$d_R$ 是另存的共享 RoPE key 维度。总字节还乘 batch、层数、历史长度和 dtype bytes。教学例：$H=32,d_k=128,r=512,d_R=64$，MLA/MHA 为 $576/8192=7.03\%$；这**不是某模型实测值**。GQA 若 $H_{KV}=8$，比值为 $576/2048=28.13\%$。权重矩阵是模型级存储，cache 随 $T$ 增长；大矩阵仍负责跨维度映射，所以 cache 变小不等于参数量同比缩小。[R03]
+
+### 代码或伪代码
+
+下面验证单头、无位置分支下两种执行顺序等价；不模拟低秩替换 MHA，也不模拟 fused kernel。
 
 ```python
-import torch
+import numpy as np
 
-def mla_project(x, w_dkv, w_uk, w_uv):
-    latent = x @ w_dkv       # cache this: [B, T, d_c]
-    k = latent @ w_uk
-    v = latent @ w_uv
-    return latent, k, v
+def mla_content_paths(c, q, uk, uv):
+    # c:[T,r], q:[dk], uk:[dk,r], uv:[dv,r]
+    k = c @ uk.T
+    v = c @ uv.T
+    logits = k @ q / np.sqrt(q.size)
+    weights = np.exp(logits - logits.max())
+    weights /= weights.sum()
+    explicit = weights @ v
+    absorbed_logits = c @ (uk.T @ q) / np.sqrt(q.size)
+    a = np.exp(absorbed_logits - absorbed_logits.max())
+    a /= a.sum()
+    absorbed = uv @ (a @ c)
+    return explicit, absorbed, logits, absorbed_logits
 ```
 
-面试要讲 tradeoff：MLA 省 KV cache，但会增加投影/恢复复杂度，对 kernel fusion、并行实现、RoPE 处理和训练稳定性都有要求。不要把 MLA 和量化混为一谈：量化是降低 dtype bytes，MLA 是降低表示维度，两者可以叠加。
+### 技术取舍
 
-### 高频追问补充
+GQA 改 KV 头数，MLA 改缓存表示维度，量化改每个元素的字节数。三者的收益不能在没有配置说明时直接相乘。吸收后的 latent dot-product 维度 $r$ 可能大于 $d_k$，还受内存布局、batch 和 kernel 限制；省 HBM 不保证所有长度下更快。RoPE 障碍及解耦分支统一见 rope_position。
 
-#### 1. MLA 和 GQA/MQA 在压缩 KV cache 上的区别是什么？
+### 深入追问
 
-答：GQA/MQA 压缩的是 KV head 数，MLA 压缩的是 K/V 缓存表示维度，二者都是减少 K/V 冗余但机制不同。
+#### 1. 为什么不能缓存低秩 c，却每步把所有历史 KV 展开到 HBM？
 
-GQA/MQA 是减少 KV head 数，MLA 是把 K/V 压到低维潜表示再恢复，压的是表示维度。低秩会带来信息瓶颈，所以需要训练时共同适配，不是推理时随便替换。DeepSeek 架构题常把 MLA、DeepSeekMoE、MTP、FP8、负载均衡一起问，回答时按“省 cache、省计算、扩容量、提训练/推理效率”分层讲。
+答：能算对，但恢复和写回整段历史会抵消缓存带宽收益。要区分逻辑缓存容量与每步物化中间量；可比较 peak memory、HBM bytes 和 decode latency。
 
-MLA 可抽象成先压缩再恢复：
+#### 2. rank 足够大是不是就一定比 MHA 好？
 
-$$
-c_t=W_c h_t,\quad K_t=W_k c_t,\quad V_t=W_v c_t
-$$
+答：足够的 rank 只是表达某些映射的必要容量条件；优化、位置分支、训练数据和 kernel 路径仍会改变结果。rank 增大会降低压缩率，需画质量—内存—延迟曲线。
 
-缓存低维 `c_t` 比缓存完整 K/V 更省，但信息瓶颈和算子实现更复杂，所以需要训练时联合适配。
+#### 3. MLA、MoE、MTP 应该怎样一起回答？
 
-#### 2. DeepSeek 里 MLA 为什么常和 MoE、MTP、负载均衡一起被问？
+答：分别对应缓存表示、条件计算容量、训练信号与推测解码。可以组合，但不能把系统总收益全部归因于 MLA，也不能把 mHC 当作 KV 压缩。
 
-答：DeepSeek 架构题常把 MLA、MoE、MTP、FP8、负载均衡放一起问，因为它们分别对应 KV、容量、训练信号、数值效率和系统吞吐。
+### 研究来源
 
-GQA/MQA 是减少 KV head 数，MLA 是把 K/V 压到低维潜表示再恢复，压的是表示维度。低秩会带来信息瓶颈，所以需要训练时共同适配，不是推理时随便替换。DeepSeek 架构题常把 MLA、DeepSeekMoE、MTP、FP8、负载均衡一起问，回答时按“省 cache、省计算、扩容量、提训练/推理效率”分层讲。
-
-MLA 可抽象成先压缩再恢复：
-
-$$
-c_t=W_c h_t,\quad K_t=W_k c_t,\quad V_t=W_v c_t
-$$
-
-缓存低维 `c_t` 比缓存完整 K/V 更省，但信息瓶颈和算子实现更复杂，所以需要训练时联合适配。
-
-#### 3. 低秩潜表示会不会影响注意力表达能力？
-
-答：低秩潜表示会带来信息瓶颈，不能推理时硬替换，必须训练时让模型共同适配。
-
-GQA/MQA 是减少 KV head 数，MLA 是把 K/V 压到低维潜表示再恢复，压的是表示维度。低秩会带来信息瓶颈，所以需要训练时共同适配，不是推理时随便替换。DeepSeek 架构题常把 MLA、DeepSeekMoE、MTP、FP8、负载均衡一起问，回答时按“省 cache、省计算、扩容量、提训练/推理效率”分层讲。
-
-MLA 可抽象成先压缩再恢复：
-
-$$
-c_t=W_c h_t,\quad K_t=W_k c_t,\quad V_t=W_v c_t
-$$
-
-缓存低维 `c_t` 比缓存完整 K/V 更省，但信息瓶颈和算子实现更复杂，所以需要训练时联合适配。
+- [R03](https://arxiv.org/html/2405.04434v5): DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model — Section 2.1, Multi-Head Latent Attention and Decoupled Rotary Position Embedding（核对：2026-10-13）。
 
 ## flash_attention
+
 **面试官常问：**
 
 1. FlashAttention 是近似 attention 吗？它到底优化了什么？
@@ -1742,14 +1742,14 @@ $$
 
 其中 `l` 是 softmax denominator，`o` 是未归一化输出累积。伪代码：
 
-```python
+```pseudocode
 for q_block in Q_blocks:
     m = -inf
     l = 0
     o = 0
     for k_block, v_block in KV_blocks:
         s = q_block @ k_block.T / sqrt(d)
-        m_new = \max(s, dim=-1)
+        m_new = max(s, dim=-1)
         p = exp(s - m_new)
         l_new = sum(p, dim=-1)
         o_new = p @ v_block
@@ -1819,94 +1819,96 @@ $$
 它省的是 HBM IO 和中间 attention matrix，不是把 attention 变成近似。
 
 ## sparse_linear_attention
+
 **面试官常问：**
 
-1. Sparse Attention、Linear Attention、Gated Attention 分别如何降低复杂度？
-2. Linear Attention 用核函数改写 softmax attention 的直觉是什么？
-3. 滑动窗口 attention 的 mask 怎么写？复杂度是多少？
-4. 这些方法相比标准 attention 的表达能力代价是什么？
+1. Sparse、Linear、Gated Attention 与 FlashAttention 分别改了什么？
+2. 线性注意力的归一化分母和因果递推怎样写？
+3. Delta Rule 为什么用预测误差写入，非正交 key 会怎样干扰？
+4. 与 AttnRes、CSA2 能否组合，不能混淆哪些复杂度口径？
 
-标准 attention 的瓶颈是 `O(T^2)`。Sparse Attention 直接减少连接数，例如局部窗口、block sparse、global token：
+### 原理与关键公式
 
-$$
-\begin{aligned}
-Attention_i only attends to j in window(i) or selected global tokens \\
-complexity \approx O(T \cdot  window \cdot  d)
-\end{aligned}
-$$
+答：稀疏注意力减少**序列位置的连接**；核化线性注意力改变聚合形式；门控控制信息通过或遗忘；FlashAttention 改 exact attention 的执行和 IO。普通稠密 attention 后乘一个 gate，通常仍是二次序列复杂度；**门控本身不保证线性**。
 
-Linear Attention 则把 softmax attention 改写成核函数形式：
+对因果核化线性注意力，$\phi(k)\in\mathbb R^m$，$v\in\mathbb R^{d_v}$：
 
 $$
-\operatorname{softmax}(QK^T)V \approx \phi(Q) (\phi(K)^T V)
+S_t=\sum_{j\le t}\phi(k_j)v_j^\top,\quad
+z_t=\sum_{j\le t}\phi(k_j),\qquad
+o_t=\frac{\phi(q_t)^\top S_t}
+{\phi(q_t)^\top z_t+\epsilon}.
 $$
 
-如果先算 `S = phi(K)^T V`，复杂度可接近 `O(T d^2)` 或 `O(T d)` 的变体，但通常会损失精确 softmax 表达。Gated Attention 引入门控控制信息流：
+非负特征映射有助于分母稳定。这是核化 attention 的精确递推，不普遍等价于 softmax attention。状态为 $O(md_v+m)$，序列扫描为 $O(Tmd_v)$；“线性”指固定特征维度后关于 $T$ 线性，不能丢掉通道维度。[R15]
+
+Delta Rule 是关联记忆的误差校正写入。以下采用 $S\in\mathbb R^{d_k\times d_v}$、单位范数 key：
 
 $$
-y = gate(x) \cdot  attention(x) + (1 - gate(x)) \cdot  residual
+\bar S_t=\alpha_t S_{t-1},\quad
+e_t=v_t-\bar S_t^\top k_t,\quad
+S_t=\bar S_t+\beta_t k_te_t^\top,\qquad
+o_t=S_t^\top q_t.
 $$
 
-滑动窗口 mask 示例：
+这是标量遗忘 gate 的教学形式；$\alpha$ 控制旧记忆，$\beta$ 控制当前纠错强度。若 $\alpha=1,\beta=1,\|k\|=1$，写入后 $S_t^\top k=v_t$；若 key 不单位化，这一结论不成立。KDA 等更细粒度 gate 不能不加说明地等同于此标量公式。[R14]
+
+### 代码或伪代码
 
 ```python
-import torch
+import numpy as np
 
-def sliding_window_mask(seq_len, window, device="cpu"):
-    i = torch.arange(seq_len, device=device)[:, None]
-    j = torch.arange(seq_len, device=device)[None, :]
-    causal = j <= i
-    local = j >= i - window + 1
-    return causal & local
+def delta_update(state, key, value, alpha=1.0, beta=1.0):
+    # state:[dk,dv], key:[dk] (unit norm), value:[dv]
+    decayed = alpha * state
+    error = value - key @ decayed
+    return decayed + beta * np.outer(key, error)
+
+def causal_linear(q, k, v, eps=1e-12):
+    # q,k are nonnegative feature vectors [T,m]; v:[T,dv]
+    state = np.zeros((k.shape[1], v.shape[1]))
+    normalizer = np.zeros(k.shape[1])
+    outputs = []
+    for qi, ki, vi in zip(q, k, v):
+        state += np.outer(ki, vi)
+        normalizer += ki
+        outputs.append((qi @ state) / (qi @ normalizer + eps))
+    return np.asarray(outputs)
 ```
 
-面试回答 tradeoff：Sparse 简单可控但可能漏长程依赖；Linear 长序列吞吐好但训练稳定和表达力是难点；Gated 可以过滤噪声但多了参数和调参面。不能只说“复杂度低”，要说代价是什么。
+### 技术取舍
 
-### 高频追问补充
+原创小例：$k_1=(1,0)$，$k_2=(0.9,\sqrt{0.19})$，两者单位化但内积为 0.9。先写 $v_1=1$，再按 $\alpha=\beta=1$ 写 $v_2=0$，第二次误差为 $-0.9$，对第一个 key 的读取改变 $-0.81$。误差校正能覆写当前 key，却仍会干扰相似 key，固定大小记忆不是无限容量字典。
 
-#### 1. Attention 真被高估了吗？哪些任务可以用 sparse/linear attention 替代？
+| 机制 | 主要成本 | 主要风险 |
+|---|---|---|
+| 全量 softmax | $O(T^2d)$；decode 每步扫历史 | KV 读取与长序列成本 |
+| 稀疏 softmax，每 query 选 k 项 | 注意力约 $O(Tkd)$，另加选择成本 | 漏掉重要连接，indexer 可能仍扫全历史 |
+| 核化/递推状态 | 固定维度下 $O(Tmd_v)$ | 状态容量、干扰与数值稳定 |
+| 混合层 | 取决于各类层比例及缓存 | 保留精确检索但不会自动消除所有 KV |
 
-答：Attention 没有被简单高估；稀疏/线性 attention 适合局部依赖强或超长上下文任务，但会牺牲部分全局精确交互。
+### 深入追问
 
-稀疏/线性注意力降低复杂度，但会牺牲全局精确交互或引入近似误差。对局部依赖强、超长上下文、检索式任务，它们可能很有价值；对需要任意 token 两两精细交互的任务，标准 softmax attention 仍强。Gated Attention 更像学习信息流开关，稀疏注意力更像减少连接边，面试中要讲清收益和代价，而不是只说复杂度从 `O(n^2)` 到 `O(n)`。
+#### 1. sparse 的 k 固定，为什么系统仍未必是严格线性？
 
-复杂度对比：
+答：Top-k 前的索引打分可能扫描所有历史；必须把 indexer、压缩和局部窗口一起计入。CSA2 的首次全局扫描与后续候选池重索引见 deepseek_v41_ced_csa2。[R07]
 
-$$
-SoftmaxAttention=O(T^2d),\quad SparseAttention\approx O(Twd),\quad LinearAttention\approx O(Td^2)
-$$
+#### 2. Attention Residual 是否也在压缩历史 token？
 
-其中 `w` 是窗口或稀疏连接数。回答时要说清任务是否允许牺牲任意 token 两两精确交互。
+答：不是。AttnRes 处理同一 token 的深度来源，序列 attention 处理不同 token 的关系。两种轴可以组合，详见 attention_residual。
 
-#### 2. Linear Attention 为什么不总是比 softmax attention 好？
+#### 3. 固定状态内存是否意味着百万 token 的任意精确回忆？
 
-答：Linear Attention 不总是更好，因为核近似或递推状态可能损失 softmax attention 的表达能力和训练稳定性。
+答：不能。状态大小不随长度增加的优势，同时意味着信息瓶颈。需要测相似 key 干扰、长距离精确检索和多次覆写；单看吞吐不够。
 
-稀疏/线性注意力降低复杂度，但会牺牲全局精确交互或引入近似误差。对局部依赖强、超长上下文、检索式任务，它们可能很有价值；对需要任意 token 两两精细交互的任务，标准 softmax attention 仍强。Gated Attention 更像学习信息流开关，稀疏注意力更像减少连接边，面试中要讲清收益和代价，而不是只说复杂度从 `O(n^2)` 到 `O(n)`。
+### 研究来源
 
-复杂度对比：
-
-$$
-SoftmaxAttention=O(T^2d),\quad SparseAttention\approx O(Twd),\quad LinearAttention\approx O(Td^2)
-$$
-
-其中 `w` 是窗口或稀疏连接数。回答时要说清任务是否允许牺牲任意 token 两两精确交互。
-
-#### 3. Gated Attention 和稀疏注意力的收益分别来自哪里？
-
-答：Gated Attention 的收益来自学习信息流开关，稀疏注意力的收益来自减少连接边和计算量，二者不是一回事。
-
-稀疏/线性注意力降低复杂度，但会牺牲全局精确交互或引入近似误差。对局部依赖强、超长上下文、检索式任务，它们可能很有价值；对需要任意 token 两两精细交互的任务，标准 softmax attention 仍强。Gated Attention 更像学习信息流开关，稀疏注意力更像减少连接边，面试中要讲清收益和代价，而不是只说复杂度从 `O(n^2)` 到 `O(n)`。
-
-复杂度对比：
-
-$$
-SoftmaxAttention=O(T^2d),\quad SparseAttention\approx O(Twd),\quad LinearAttention\approx O(Td^2)
-$$
-
-其中 `w` 是窗口或稀疏连接数。回答时要说清任务是否允许牺牲任意 token 两两精确交互。
+- [R14](https://arxiv.org/abs/2412.06464): Gated Delta Networks: Improving Mamba2 with Delta Rule — Gated delta rule recurrence（核对：2026-10-13）。
+- [R15](https://proceedings.mlr.press/v119/katharopoulos20a.html): Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention — Causal linear attention and recurrent formulation（核对：2026-10-13）。
+- [R07](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf): DeepSeek-V4.1-Flash Technical Report — Sections 2.2–2.3 and 3.2.1–3.2.2; Figures 4–5（核对：2026-10-13）。
 
 ## swiglu_ffn
+
 **面试官常问：**
 
 1. SwiGLU 的公式是什么？和普通 FFN/GELU FFN 有什么区别？
@@ -2008,6 +2010,7 @@ $$
 $$
 
 ## lora
+
 **面试官常问：**
 
 1. LoRA 的低秩分解公式是什么？alpha/r 起什么作用？
@@ -2111,6 +2114,7 @@ W_merged = W_base + (alpha / r) * (B @ A)
 rank 决定容量，alpha 决定增量尺度，target modules 决定能力注入位置。
 
 ## rag_vs_finetune
+
 **面试官常问：**
 
 1. RAG 和微调分别解决什么问题？如何做选型？
@@ -2193,6 +2197,7 @@ $$
 指标也要拆：召回率、命中率、NDCG、引用正确率、答案忠实性和端到端准确率。微调则看任务泛化、遗忘、风格稳定和成本。
 
 ## code_search_rag
+
 **面试官常问：**
 
 1. Claude Code 类工具为什么常用 grep/ripgrep，而不是只用向量 RAG？
@@ -2271,6 +2276,7 @@ rg -n "class Agent|def run|error message" .
 再读调用点和测试。向量索引可作为补充，但要解决索引新鲜度、权限和符号精确度问题。
 
 ## agent_arch
+
 **面试官常问：**
 
 1. Agent 和 Workflow 的本质区别是什么？
@@ -2351,6 +2357,7 @@ def agent_loop(task, tools, max_steps=20):
 有了结构化轨迹，才能做权限审计、失败 replay、成本统计、自动评测和人工接管。
 
 ## mcp_function_skill
+
 **面试官常问：**
 
 1. Function Call、Tool、MCP、Skill、Rules 分别是什么？
@@ -2396,7 +2403,7 @@ def run_tool_call(call, registry, user_ctx):
     args = tool.schema.validate(call["arguments"])
     with timeout(tool.timeout_seconds):
         result = tool.fn(**args)
-    audit_\log(user=user_ctx.user_id, tool=tool.name, args=args, result=result.summary())
+    audit_log(user=user_ctx.user_id, tool=tool.name, args=args, result=result.summary())
     return result
 ```
 
@@ -2423,6 +2430,7 @@ def run_tool_call(call, registry, user_ctx):
 对复杂工作流，Skill 能减少每次从零探索的成本，也能降低误操作。比如小红书采集 skill 里会记录 signed URL、风控冷却、raw 文件 gitignore，这些不是单个 tool 能表达完整的。
 
 ## agent_context_memory
+
 **面试官常问：**
 
 1. Agent 的短期记忆、长期记忆、任务记忆怎么区分？
@@ -2484,6 +2492,7 @@ def pack_context(items, budget):
 例如压缩成：`Goal / Constraints / Evidence / Decisions / Open Issues / Next Actions`。每条 evidence 最好带 source id，后续需要时可回读原文。
 
 ## sampling
+
 **面试官常问：**
 
 1. Temperature、Top-k、Top-p 分别如何改变采样分布？
@@ -2509,7 +2518,7 @@ Top-k 保留概率最高的 `k` 个 token；Top-p 保留累计概率达到 `p` �
 import torch
 
 def sample_token(logits, temperature=1.0, top_k=None, top_p=None):
-    logits = logits / \max(temperature, 1e-6)
+    logits = logits / max(temperature, 1e-6)
     if top_k:
         values, _ = torch.topk(logits, top_k)
         logits[logits < values[-1]] = -float("inf")
@@ -2572,6 +2581,7 @@ $$
 top-k 保留前 k 个 token，top-p 保留累计概率超过 p 的最小集合；过滤后要重新归一化。repeat penalty 通常在过滤前调整已出现 token 的 logits。
 
 ## serving_vllm
+
 **面试官常问：**
 
 1. vLLM 的 PagedAttention 解决了什么显存问题？
@@ -2638,6 +2648,7 @@ PagedAttention 把 KV 切成 block，避免连续大块显存分配；prefix/Rad
 面试中可用一句话区分：PagedAttention 管碎片，Radix/prefix 管重复 prefill，HiCache 管容量层级，FP8 KV 管单元素字节数。
 
 ## zero_parallel
+
 **面试官常问：**
 
 1. ZeRO-1/2/3 分别切分了哪些模型状态？
@@ -2726,6 +2737,7 @@ $$
 checkpointing 则不切参数，而是少存激活；tensor parallel 切矩阵，pipeline parallel 切层。
 
 ## quantization
+
 **面试官常问：**
 
 1. 对称量化和非对称量化的公式是什么？
@@ -2833,6 +2845,7 @@ $$
 group size 越小，每组 scale 越贴合局部分布，但 scale/metadata 开销越大。
 
 ## evaluation
+
 **面试官常问：**
 
 1. PPL 的定义是什么？为什么 PPL 不等于指令效果？
@@ -2863,7 +2876,7 @@ RAG 召回评估：
 ```python
 def recall_at_k(retrieved_ids, gold_ids, k):
     hit = set(retrieved_ids[:k]) & set(gold_ids)
-    return len(hit) / \max(len(gold_ids), 1)
+    return len(hit) / max(len(gold_ids), 1)
 
 def mrr(retrieved_ids, gold_ids):
     gold = set(gold_ids)
@@ -2920,6 +2933,7 @@ $$
 RAG 指标拆检索和生成；Agent 指标拆 task success、tool success、轨迹步数、cost、latency、安全和可恢复性。
 
 ## cot_train_infer
+
 **面试官常问：**
 
 1. 训练时让模型输出 CoT，推理时只输出最终答案，怎么实现？
@@ -2999,185 +3013,181 @@ $$
 部署时只展示 `answer`。关键是验证无显式 CoT 时最终正确率，以及防止模型把隐藏推理泄露到用户可见输出。
 
 ## agent_eval_observability
+
 **面试官常问：**
 
-1. Agent Eval 和普通 LLM benchmark 有什么区别？
-2. Agent 可观测体系应该记录哪些字段？
-3. 如何自动生成或构造 Agent 评测环境？
-4. tool success rate、task success rate、final answer accuracy 冲突时怎么分析？
+1. LLM 输出 rubric 与 Agent 评测 rubric 的对象有何不同？
+2. task success、tool success、pass@k、pass^k 应怎样定义？
+3. 怎样设计可复现、可审计、不会奖励“看起来完成”的 grader？
+4. 模型、harness、检索和 reward 同时更新后，如何判断谁带来了提升？
 
-Agent 评估不能只看最终答案，因为 Agent 的失败可能发生在规划、工具选择、参数生成、工具执行、结果整合、重试恢复任一环节。一个可落地的评估体系至少拆成：
+### 原理与关键公式
+
+答：文本 rubric 评价回答是否正确、清晰、有依据；Agent 还要评价**环境最终状态、行为约束、工具过程与成本**。相同最终话术可能对应完全不同的真实操作结果。先定义 task、初始快照、允许动作、预算、终态判定，再定义一次 trial。代码修复看隔离测试和实际 diff；数据库任务看目标行及约束；不是检查模型是否说了“已完成”。[R11,R12]
+
+建议 rubric 分开保存以下维度，避免一个加权总分遮住严重错误：
+
+| 维度 | 可检查证据 | 典型反例 |
+|---|---|---|
+| 结果 | 测试、数据库状态、文件产物 | 回答成功，实际没保存 |
+| 约束 | 授权范围、不可修改项、预算 | 完成目标但误改其他记录 |
+| 证据 | 引用可访问且支持结论 | 引用存在，内容不支持 |
+| 恢复 | 注入故障后能继续，结果仍正确 | 靠无界重试碰对 |
+| 效率 | 实际 token、调用次数、费用、p95 | 以更高预算换分却不披露 |
+
+若 $n$ 次独立重置运行有 $c$ 次成功，至少一次成功与每次都成功是不同目标：
 
 $$
-\begin{aligned}
-TaskSuccess &= 1[\text{最终任务完成}] \\
-ToolSuccess &= \frac{\#\text{成功工具调用}}{\#\text{总工具调用}} \\
-Cost &= \text{tokens} + \lambda_1 \cdot \text{latency} + \lambda_2 \cdot \#\text{tool_calls} \\
-TrajectoryScore &= f(\text{plan}, \text{tool_args}, \text{observations}, \text{recovery})
-\end{aligned}
+\widehat{\mathrm{pass@}k}
+=1-\frac{\binom{n-c}{k}}{\binom nk},\qquad
+\widehat{\mathrm{pass}^{k}}
+=\frac{\binom ck}{\binom nk},\quad 1\le k\le n.
 $$
 
-可观测日志要记录：用户目标、系统约束、每轮 prompt、模型原始输出、tool name、tool args、tool result、状态迁移、异常、重试、人工接管点、token/latency/cost。没有这些字段，失败只能靠猜。
+约定当上标小于下标时组合数为 0。前者适合可筛选候选的搜索，后者衡量重复可靠性；真实单次成功率为 $p$ 且独立时，理论量分别为 $1-(1-p)^k$ 和 $p^k$。$p=0.7,k=4$ 得到 $0.9919$ 与 $0.2401$；同样能力可呈现截然不同数字。应先按任务计算、再宏平均；不同任务难度混合后不能直接把总体均值取幂。[R11,R13；数字为教学例]
 
-自动评测环境的关键是“可验证”。例如检索/网页 Agent 可以有标准答案和引用检查；代码 Agent 可以跑测试；数据库 Agent 可以比对 SQL 结果；工具调用 Agent 可以用 mock server 检查参数。
+### 代码或伪代码
 
 ```python
-def evaluate_agent_trace(trace, judge):
-    tool_ok = sum(s["ok"] for s in trace.tool_calls) / max(len(trace.tool_calls), 1)
-    final_ok = judge.check_final_answer(trace.final_answer)
-    cost = trace.tokens + 0.1 * trace.latency_ms + 5 * len(trace.tool_calls)
-    recovered = any(s.get("retry_after_error") for s in trace.steps)
-    return {
-        "task_success": int(final_ok),
-        "tool_success": tool_ok,
-        "cost": cost,
-        "recovered": recovered,
-    }
+from math import comb
+
+def reliability(n, c, k):
+    if not (isinstance(n, int) and isinstance(c, int)
+            and isinstance(k, int) and 0 <= c <= n and 1 <= k <= n):
+        raise ValueError("require integers: 0 <= c <= n and 1 <= k <= n")
+    denom = comb(n, k)
+    choose = lambda a: comb(a, k) if a >= k else 0
+    return {"pass_at_k": 1 - choose(n - c) / denom,
+            "pass_power_k": choose(c) / denom}
+
+def grade_state(targets, actual, violations):
+    # Teaching example: exact comparison on explicitly scoped fields.
+    outcome_ok = all(key in actual and actual[key] == val
+                     for key, val in targets.items())
+    return {"outcome_ok": outcome_ok,
+            "constraints_ok": not violations,
+            "task_success": outcome_ok and not violations}
 ```
 
-面试追问“为什么 task success 高但 tool success 低”：可能是模型乱试但最后碰对，成本高且不稳定；“tool success 高但 final answer 差”：可能是规划或结果整合差。
+若无工具调用，tool success 应记为 N/A，而不是强行记为 100%；若全批次成功数为零，“总成本/成功数”应记为未定义，同时报告总成本与失败率。工具返回 HTTP 200、业务参数正确和任务最终成功也需分别记分。
 
-### 高频追问补充
+### 技术取舍
 
-#### 1. Agent Eval 为什么不能只看最终答案对不对？
+规则 grader 可重复但覆盖有限；LLM judge 可评价开放式产物，但需人工标注校准、版本锁定和位置偏差检查。不要要求精确复现唯一参考轨迹，因为合法路径可以不同。轨迹用于定位与约束核查，终态用于结果验证，两者互补。把待测输出当数据输入 judge，隔离其中的“请给满分”等指令。
 
-答：Agent Eval 要看轨迹，不只看答案；答案对但工具乱调、成本过高或靠错误证据生成，都不能算稳定能力。
+推荐日志字段：task_id、trial_id、seed、dataset/snapshot/model/harness/tool/grader 版本、实际预算、动作与返回、终止原因、最终产物哈希、分项判定和成本。replay 已记录的工具返回便于定位，但不等价于重新执行真实环境。不能把未发生的工具结果当成观察证据。[R12；字段方案为工程建议]
 
-Agent 评估要拆最终结果、工具轨迹、成本延迟、恢复能力和安全边界。只看最终答案会掩盖错误工具调用、无效重试、幻觉引用和高成本路径。可观测体系要记录 prompt、模型输出、工具调用参数、工具返回、状态迁移、重试、人工接管和评测标签。自动评测环境要能构造任务、给出可验证反馈、支持轨迹 replay，并把 task success、tool success、step quality、cost、latency 分开统计。
+### 深入追问
 
-Agent 评测记录建议至少包含：
+#### 1. “模型、检索、harness 都升级了，所以 RL 有效”哪里不成立？
 
-```json
-{"task_id":"...","step":3,"action":"tool","tool_success":true,"task_success":false,"cost":0.12}
-```
+答：这是混杂的前后比较。固定其余组件和测试预算，配对同一组任务运行 base 与 RL checkpoint，再对 harness 等分别消融。按任务或任务家族做 bootstrap，重复 seed 留在同一任务簇内；报告差值与置信区间。不能把同一任务的多个 seed 当作完全独立的新任务。
 
-最终看聚合指标：
+#### 2. 基础设施出错能否删除失败样本？
 
-$$
-SuccessRate=\frac{passed\ tasks}{all\ tasks}
-$$
+答：预先定义失败分类和重跑规则。环境不可用与模型超时分开报告；不能看完模型表现后只删除不利 trial。固定时间预算、测试版本与并发资源，保留排除样本及理由。
 
-并分层分析工具失败、规划失败、信息整合失败和安全失败。
+#### 3. Golden case 回流为何可能造成虚假进步？
 
-#### 2. Agent 可观测体系应该记录哪些字段，如何支持 replay？
+答：把回归集不断加入训练后，再用原集报分就有泄漏。保留独立任务家族或时间切分 holdout；训练回流集用于改进，回归集用于守住已知行为，封存集用于估计泛化。成功率、预算、检索范围和 grader 改动都应随版本记录。
 
-答：可观测字段要支持 replay，所以必须记录输入、模型动作、工具参数、工具结果、状态迁移、错误和重试。
+### 研究来源
 
-Agent 评估要拆最终结果、工具轨迹、成本延迟、恢复能力和安全边界。只看最终答案会掩盖错误工具调用、无效重试、幻觉引用和高成本路径。可观测体系要记录 prompt、模型输出、工具调用参数、工具返回、状态迁移、重试、人工接管和评测标签。自动评测环境要能构造任务、给出可验证反馈、支持轨迹 replay，并把 task success、tool success、step quality、cost、latency 分开统计。
-
-Agent 评测记录建议至少包含：
-
-```json
-{"task_id":"...","step":3,"action":"tool","tool_success":true,"task_success":false,"cost":0.12}
-```
-
-最终看聚合指标：
-
-$$
-SuccessRate=\frac{passed\ tasks}{all\ tasks}
-$$
-
-并分层分析工具失败、规划失败、信息整合失败和安全失败。
-
-#### 3. 自动评测环境如何设计 task success、tool success 和安全指标？
-
-答：自动评测环境要把 task success、tool success、安全、成本和延迟拆开算，并保留失败轨迹用于回归。
-
-Agent 评估要拆最终结果、工具轨迹、成本延迟、恢复能力和安全边界。只看最终答案会掩盖错误工具调用、无效重试、幻觉引用和高成本路径。可观测体系要记录 prompt、模型输出、工具调用参数、工具返回、状态迁移、重试、人工接管和评测标签。自动评测环境要能构造任务、给出可验证反馈、支持轨迹 replay，并把 task success、tool success、step quality、cost、latency 分开统计。
-
-Agent 评测记录建议至少包含：
-
-```json
-{"task_id":"...","step":3,"action":"tool","tool_success":true,"task_success":false,"cost":0.12}
-```
-
-最终看聚合指标：
-
-$$
-SuccessRate=\frac{passed\ tasks}{all\ tasks}
-$$
-
-并分层分析工具失败、规划失败、信息整合失败和安全失败。
+- [R11](https://arxiv.org/html/2406.12045v1): tau-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains — Sections 3 and 5; pass^k reliability metric（核对：2026-10-13）。
+- [R12](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents): Demystifying evals for AI agents — Tasks, trials, graders, outcomes; capability and regression evaluation（核对：2026-10-13）。
+- [R13](https://arxiv.org/abs/2107.03374): Evaluating Large Language Models Trained on Code — pass@k estimator（核对：2026-10-13）。
 
 ## agentic_rl_self_evolution
+
 **面试官常问：**
 
-1. Agentic RL 和普通 RLHF/GRPO 的区别是什么？
-2. 自蒸馏、自进化 Agent、Search-E1、SDAR、OPD 这类方法在解决什么问题？
-3. Agent 轨迹怎么产生、筛选和回流训练？
-4. 如何避免自我训练越训越偏？
+1. 长程 Agent RL 相比单轮 RLHF 多了哪些困难？
+2. 增加上下文窗口、增加 rollout 长度与增加训练能力是一回事吗？
+3. 上下文 compaction 后如何计算正确的行为概率与价值？
+4. 成功轨迹回流、自蒸馏、在线 RL 和 AlphaZero 式搜索如何区分？
 
-Agentic RL 的对象不是单轮回答，而是多步轨迹：
+### 原理与关键公式
 
-$$
-\tau = (s_0, a_0, o_0, s_1, a_1, o_1, ..., y)
-$$
-
-其中 `a_t` 可能是自然语言、工具调用或环境动作，`o_t` 是工具/环境反馈。优化目标可以写成：
+答：Agent 的动作改变环境，下一轮观测又影响动作，优化对象是闭环轨迹。可观察历史不一定是环境的完整 Markov 状态，更严谨的表述是部分可观测决策过程。给定初始任务 $x$：
 
 $$
-J(\theta)=\mathbb{E}_{\tau\sim\pi_\theta}\left[R_{final}(\tau)+\sum_t \gamma^t R_{step}(s_t,a_t,o_t)-\beta KL(\pi_\theta||\pi_{ref})\right]
+p_\theta(\tau\mid x)
+=\prod_t \pi_\theta(a_t\mid h_t)\,P(o_{t+1}\mid h_t,a_t),\qquad
+J(\theta)=\mathbb E_\tau\!\left[\sum_{t=0}^{T-1}\gamma^tr_t\right].
 $$
 
-自蒸馏/自进化的常见闭环是：当前模型采样轨迹，环境或规则验证结果，教师模型/奖励模型打分，筛出成功轨迹，再做 SFT、DPO 或 RL 更新。OPD/在线策略蒸馏强调学生在自己分布上采样，避免固定教师数据和学生部署分布不一致。
+环境转移不由 actor 直接生成。长任务的主要困难包括：奖励稀疏、策略滞后、工具结果噪声、可变时延、环境重置、上下文丢失及分片边界。若作简化假设，每步独立且都必须成功，单步成功率为 $p$，则整链成功率为 $p^T$；例如 $0.99^{80}\approx0.448$。这是**风险累积的教学模型**，真实 Agent 可恢复、步骤不独立，不能拿它估计真实 benchmark。
 
-```python
-for task in tasks:
-    traces = [agent.rollout(task, temperature=0.8) for _ in range(k)]
-    scored = [(trace, env.verify(trace), judge.score(trace)) for trace in traces]
-    good = [t for t, ok, score in scored if ok and score > threshold]
-    replay_buffer.extend(good)
+长窗口只放宽可见历史上限；长输出预算只放宽行动机会。模型必须在对应的多轮环境中学会持续推进、检测错误和恢复，更多 tokens 不保证更好。GLM-5.3 官方卡强调同 base 下的后训练改进；不能据此断言所有增益由 SAO 或更长轨迹单独带来。[R02]
 
-train_on(replay_buffer, objective="sft_or_rl")
+### 代码或伪代码
+
+下列是系统设计伪代码，函数名代表接口，**不可直接运行，也不是 GLM 训练配方**：
+
+```pseudocode
+for task in sample_tasks_with_strata():
+    env = reset_from_versioned_snapshot(task)
+    history, trace = task.initial_context, []
+    while not terminal and budget_remaining:
+        context = compact_if_needed(history, pinned_constraints, artifact_refs)
+        action, token_logp, policy_version = rollout_engine.sample(context)
+        observation, reward, terminal = env.step(action)
+        trace.append(context_hash, action, token_logp, policy_version,
+                     observation, reward, terminal, compaction_version)
+        history = append(history, action, observation)
+    verify_terminal_state_in_isolated_grader(trace, env)
+    enqueue_complete_or_explicitly_truncated_trace(trace)
+
+for batch in learner_queue:
+    validate_episode_boundaries_and_behavior_logp(batch)
+    update_critic_then_actor(batch)  # e.g. SAO; objective explicitly configured
+    run_frozen_holdout_and_cost_checks()
 ```
 
-风险是 reward hacking、环境过窄、错误轨迹自我强化、样本多样性下降。稳定做法是保留 reference eval、人工抽检、失败样本池、KL 约束和跨任务 holdout。
-
-### 高频追问补充
-
-#### 1. Agentic RL 和普通 RLHF 最大区别是什么？
-
-答：Agentic RL 的对象是多步轨迹，普通 RLHF 多优化单轮回答偏好；前者更依赖环境反馈、工具结果和过程奖励。
-
-Agentic RL 把模型放进多步工具环境里优化轨迹，不只是优化单轮答案偏好。自蒸馏通常让当前模型采样轨迹，再用规则、环境、教师或人工筛选成功样本回流训练；核心风险是错误自我强化，所以必须有可验证任务、失败轨迹过滤、难例再采样和 holdout eval。教师反馈适合开放质量判断，环境反馈适合代码、搜索、工具任务等可验证场景，两者可以组合成 outcome reward + process reward。
-
-Agentic RL 轨迹可写成：
+**Compaction 关键约束（工程推导）**：行为概率是基于采样时真实使用的 $c_t=C(h_t)$：
 
 $$
-\tau=(s_0,a_0,o_0,\ldots,s_T,a_T),\quad R(\tau)=R_{outcome}+\sum_i R_{process,i}
+\rho_t=\frac{\pi_\theta(a_t\mid c_t)}
+{\pi_{\mathrm{behavior}}(a_t\mid c_t)}.
 $$
 
-自蒸馏必须把成功轨迹、失败轨迹和不确定轨迹分开处理，避免把错误答案当新教师。
+训练时若改用事后重写的摘要 $\widetilde c_t$，这已不是同一条件下的比率。应保存实际输入或可重建的版本及哈希，保留动作 mask、tool/schema 版本、环境快照、截断原因和逐 token 行为 logprob。观测要参与 conditioning，不能因 loss mask 为 0 就从上下文删除。若摘要本身由待训练策略生成，是否纳入动作与奖励范围也要明确定义。
 
-#### 2. 自蒸馏/自进化 Agent 如何避免错误轨迹越训越多？
+### 技术取舍
 
-答：自蒸馏要避免错误轨迹回流，必须用规则验证、教师复核、失败样本过滤和独立 holdout 集。
+| 方案 | 更新依据 | 主要收益 | 局限 |
+|---|---|---|---|
+| 成功轨迹 SFT 回流 | 经验证的行动序列 | 简单、可离线 | 筛选偏差，失败状态覆盖不足 |
+| 在线策略蒸馏 | 学生采样，教师提供监督 | 覆盖学生实际访问状态 | 教师成本与错误继承 |
+| 在线 Agent RL | 环境回报及优势 | 优化闭环任务 | rollout 昂贵、奖励与环境工程复杂 |
+| 搜索/自博弈 | 可分支模拟、价值及终局反馈 | 提高探索和前缀评估 | 真实工具未必可撤销或精确模拟 |
 
-Agentic RL 把模型放进多步工具环境里优化轨迹，不只是优化单轮答案偏好。自蒸馏通常让当前模型采样轨迹，再用规则、环境、教师或人工筛选成功样本回流训练；核心风险是错误自我强化，所以必须有可验证任务、失败轨迹过滤、难例再采样和 holdout eval。教师反馈适合开放质量判断，环境反馈适合代码、搜索、工具任务等可验证场景，两者可以组合成 outcome reward + process reward。
+把这些方法串成一条流程不等于它们是同一目标函数。“所有组件同时升级后效果变好”只能证明系统组合有效；要归因于 RL，需要固定任务集、base、harness、工具版本和测试预算，做有无 RL、compaction、PRM、异步策略等消融，记录成功率与单位成功成本。[R08,R09,R12；表格及实验设计为原创归纳]
 
-Agentic RL 轨迹可写成：
+### 深入追问
 
-$$
-\tau=(s_0,a_0,o_0,\ldots,s_T,a_T),\quad R(\tau)=R_{outcome}+\sum_i R_{process,i}
-$$
+#### 1. 能不能直接照搬 AlphaZero 的自博弈？
 
-自蒸馏必须把成功轨迹、失败轨迹和不确定轨迹分开处理，避免把错误答案当新教师。
+答：前提差异很大。棋类具有可克隆状态、明确规则与胜负；真实工具可能慢、随机且有外部副作用。可以在隔离、可复位的代码环境做搜索与课程学习，但不能把 judge 自评当作可靠胜负，也不能把重复尝试的 pass@k 与单次能力混报。
 
-#### 3. 在线策略蒸馏、环境反馈和教师模型反馈如何组合？
+#### 2. 只训练成功轨迹会怎样？
 
-答：教师模型适合评价开放质量，环境反馈适合可验证任务，在线策略蒸馏适合让学生覆盖自己的部署分布。
+答：模型可能学不到错误恢复，也容易集中到简单任务。保留失败状态用于分析、重采样、偏好构造或 RL，不等于把失败动作当成 SFT 正例；训练池、开发集、封存评测集按任务家族隔离。
 
-Agentic RL 把模型放进多步工具环境里优化轨迹，不只是优化单轮答案偏好。自蒸馏通常让当前模型采样轨迹，再用规则、环境、教师或人工筛选成功样本回流训练；核心风险是错误自我强化，所以必须有可验证任务、失败轨迹过滤、难例再采样和 holdout eval。教师反馈适合开放质量判断，环境反馈适合代码、搜索、工具任务等可验证场景，两者可以组合成 outcome reward + process reward。
+#### 3. 异步吞吐提高是否就表示训练更高效？
 
-Agentic RL 轨迹可写成：
+答：要同时看每 GPU 小时的独立评测提升、有效训练 token 比例、队列等待和长任务覆盖。大量陈旧轨迹被 mask 掉，或快速简单任务淹没困难任务，都可能使吞吐上升但有效学习下降。SAO 机制见 glm_sao。[R01]
 
-$$
-\tau=(s_0,a_0,o_0,\ldots,s_T,a_T),\quad R(\tau)=R_{outcome}+\sum_i R_{process,i}
-$$
+### 研究来源
 
-自蒸馏必须把成功轨迹、失败轨迹和不确定轨迹分开处理，避免把错误答案当新教师。
+- [R01](https://arxiv.org/html/2607.07508v1): Single-Rollout Asynchronous Optimization for Agentic Reinforcement Learning — Sections 3.1–3.2; equations 1–5; Section 4.1（核对：2026-10-13）。
+- [R02](https://huggingface.co/zai-org/GLM-5.3): GLM-5.3 official model card — Introduction; benchmark footnotes（核对：2026-10-13）。
+- [R08](https://arxiv.org/abs/1707.06347): Proximal Policy Optimization Algorithms — Clipped surrogate objective（核对：2026-10-13）。
+- [R09](https://arxiv.org/abs/1506.02438): High-Dimensional Continuous Control Using Generalized Advantage Estimation — Generalized advantage estimation（核对：2026-10-13）。
+- [R12](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents): Demystifying evals for AI agents — Tasks, trials, graders, outcomes; capability and regression evaluation（核对：2026-10-13）。
 
 ## inference_cache_speculative
+
 **面试官常问：**
 
 1. Prefix Cache、RadixAttention 和 PagedAttention 分别解决什么问题？
@@ -3246,6 +3256,7 @@ $$
 实际收益取决于 draft 接受率、target batch 效率和验证开销。prefix cache 省 prefill，spec decoding 省 decode 串行步数，二者可叠加。
 
 ## data_mixture_engineering
+
 **面试官常问：**
 
 1. 预训练、SFT、后训练的数据配比有什么不同？
@@ -3319,6 +3330,7 @@ $$
 `alpha < 1` 可避免大语料域完全支配训练。每次改配比都要配 per-domain eval，否则只看总分会掩盖能力迁移。
 
 ## mtp_loss_speculative_training
+
 **面试官常问：**
 
 1. MTP Loss 和普通 next-token CE 的区别是什么？
@@ -3404,6 +3416,7 @@ $$
 实现时要处理 label shift、padding mask、未来 token 越界和不同 horizon 的 loss scale。
 
 ## multimodal_vlm_vla
+
 **面试官常问：**
 
 1. VLM/MLLM 的基本架构是什么？图像 token 如何接入 LLM？
@@ -3494,6 +3507,7 @@ $$
 评估不能只看图文 QA，还要看闭环 task success、碰撞/安全、恢复能力和跨环境泛化。
 
 ## deepseek_arch
+
 **面试官常问：**
 
 1. DeepSeek/Qwen/Kimi 技术报告里最常被问的架构创新有哪些？
@@ -3593,6 +3607,7 @@ $$
 例如 MLA: KV cache 瓶颈 -> 低维潜表示 -> 省显存但实现复杂 -> 看长上下文吞吐和效果。
 
 ## company_interview
+
 **面试官常问：**
 
 1. 大模型算法/Agent 岗面经里项目通常会被怎么深挖？
@@ -3679,6 +3694,7 @@ Agent 岗重点是系统设计、工具调用、记忆、评估和工程落地�
 每个项目至少准备一张链路图、三组 ablation、三个失败 case 和一组成本/延迟指标。
 
 ## coding_common
+
 **面试官常问：**
 
 1. 大模型算法岗常见手撕代码题有哪些？
@@ -3799,3 +3815,261 @@ shape -> formula -> code -> stability/boundary
 ```python
 y = x / torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps) * weight
 ```
+
+## glm_sao
+
+**面试官常问：**
+
+1. SAO 的准确全称是什么，和 GLM-5.2/5.3 是什么关系？
+2. 为什么同 prompt 多轨迹组采样会加剧长程异步训练的等待？
+3. DIS 与 PPO clipping 有何不同，为什么要保存 rollout logprob？
+4. 单轨迹如何估计优势，为什么 critic 不会因此消失？
+
+### 原理与关键公式
+
+答：此处 SAO 指 **Single-Rollout Asynchronous Optimization（单轨迹异步优化）**，不是 Self-Adaptive Optimization。SAO 论文明确给出在 GLM-5.2 agentic RL 中的部署；GLM-5.3 官方卡说明它沿用 GLM-5.2 base、通过后训练提升能力。两份证据不能推出“SAO 首次由 5.3 提出”或“5.3 所有提升均由 SAO 导致”，也不应套用到架构不同的 GLM-5.3-Flash。[R01,R02]
+
+每 prompt 采样一条轨迹，完成后即可入训练队列，避免为同组慢轨迹等待；这不意味着 batch size=1，也不意味着只训练单步。critic 提供单轨迹所需基线；论文研究了更频繁的 critic 更新、冻结 critic attention 及动作间 GAE。冻结的是价值模型的 attention，不能解读成 actor attention 不训练。[R01]
+
+行为策略可能随采样更新。对每个动作 token 保存采样器当时记录的概率，直接计算：
+
+$$
+\rho_t=\exp\!\left(\log\pi_\theta(a_t\mid h_t)
+-\log\pi_{\mathrm{rollout},t}(a_t\mid h_t)\right),\qquad
+w_t=\rho_t\,\mathbf1[1-\epsilon_l<\rho_t<1+\epsilon_h].
+$$
+
+DIS 在上下界之外直接排除 token，而 PPO 的 min/clip 取决于优势方向。二者不能写成同一机制。下式是用于解释 policy-gradient 权重的 **stop-gradient 教学 surrogate**：
+
+$$
+\mathcal L_{\mathrm{actor}}
+=-\frac{\sum_{t\in\mathcal A}
+\operatorname{sg}(w_t\widehat A_t)\log\pi_\theta(a_t\mid h_t)}
+{|\mathcal A|}.
+$$
+
+这里显式停止权重和优势的梯度；否则对 $\rho\log\pi$ 两条路径都求导会改变估计器。论文展示 DIS 目标与校准函数，正式复现还需核对实现的 detach、序列归一化、正则项及采样概率口径。下面只演示 mask 权重，**不是完整 SAO 实现**。[R01,R08]
+
+### 代码或伪代码
+
+```python
+import numpy as np
+
+def dis_weights(logp_current, logp_behavior, action_mask,
+                eps_low=0.2, eps_high=0.2):
+    # Bounds are illustrative, not reported GLM hyperparameters.
+    if not (0 < eps_low < 1 and eps_high > 0):
+        raise ValueError("invalid DIS bounds")
+    delta = np.asarray(logp_current) - np.asarray(logp_behavior)
+    action_mask = np.asarray(action_mask, bool)
+    keep = (action_mask & np.isfinite(delta)
+            & (delta > np.log1p(-eps_low))
+            & (delta < np.log1p(eps_high)))
+    weights = np.zeros_like(delta, dtype=float)
+    weights[keep] = np.exp(delta[keep])  # never exponentiate outliers
+    return weights
+
+def dis_surrogate(logp_current, frozen_weights, frozen_advantages, action_mask):
+    # Caller freezes weights/advantages before this loss evaluation.
+    valid = np.asarray(action_mask, bool)
+    if not valid.any():
+        raise ValueError("empty action-token batch")
+    lp = np.asarray(logp_current)
+    w = np.asarray(frozen_weights)
+    a = np.asarray(frozen_advantages)
+    used = valid & (w != 0)
+    return -np.sum(w[used] * a[used] * lp[used]) / valid.sum()
+```
+
+### 技术取舍
+
+单轨迹提高完成即消费的灵活性，却需支付 critic 成本；DIS 减少异常更新，却引入截断偏差并丢失样本。它是实际稳定化策略，不能声称严格恢复完整 on-policy 状态分布。组方法省 critic，但更依赖组内方差及同步等待。选择应按环境时延、奖励分布和单位算力质量提升衡量。
+
+工程建议：同时监控 queue age、policy-version lag、token 保留率、任务长度分层、value error、独立评测与环境失败率。采样器/训练器的 temperature、截断分布和数值实现若不一致，logprob 差异不全是“模型更新”；应记录实际概率定义，不要把新模型重算的概率当行为概率。
+
+### 深入追问
+
+#### 1. GRPO 设 group size=1 不就是 SAO 吗？
+
+答：不是。单元素组的中心化奖励为 0，原组优势退化。SAO 依赖 learned value baseline 及相关训练设计，而不是只改一个 group size。
+
+#### 2. 所有 token 都被 mask 后怎么办？
+
+答：actor 任务梯度为零，不应通过除以极小有效数量伪造放大。记录保留率、检查策略滞后和概率口径；代码分母固定为动作 token 数，全部被排除得到 0。critic 是否更新需按配置单独决定。
+
+#### 3. 消费最快完成的轨迹是否有偏？
+
+答：可能过度代表短、容易或工具快的任务。单轨迹减少组等待，不会自动保证任务采样分布。需要分层队列、受控抽样及按任务难度/长度验证，这是系统设计问题。
+
+### 研究来源
+
+- [R01](https://arxiv.org/html/2607.07508v1): Single-Rollout Asynchronous Optimization for Agentic Reinforcement Learning — Sections 3.1–3.2; equations 1–5; Section 4.1（核对：2026-10-13）。
+- [R02](https://huggingface.co/zai-org/GLM-5.3): GLM-5.3 official model card — Introduction; benchmark footnotes（核对：2026-10-13）。
+- [R08](https://arxiv.org/abs/1707.06347): Proximal Policy Optimization Algorithms — Clipped surrogate objective（核对：2026-10-13）。
+
+## attention_residual
+
+**面试官常问：**
+
+1. 普通残差为何可看作固定权重的深度累积？
+2. AttnRes 的 attention 在序列轴还是层轴，Q/K/V 是什么？
+3. Full 与 Block AttnRes 的计算、显存和通信开销如何变化？
+4. 它与 self-attention、门控残差、mHC 是什么关系？
+
+### 原理与关键公式
+
+答：把每个 attention 或 FFN 子层都作为一层，设输入 embedding 为 $v_0$，子层新产生的输出为 $v_i=f_i(h_i)$。普通残差展开为：
+
+$$
+h_\ell=v_0+\sum_{i=1}^{\ell-1}v_i.
+$$
+
+这里各历史输出系数为 1，表示深度方向的固定累加，**不是概率平均**。Full AttnRes 则让同一 token 对历史深度输出做归一化选择：
+
+$$
+\alpha_{\ell i}
+=\frac{\exp(w_\ell^\top\operatorname{RMSNorm}(v_i))}
+{\sum_{j<\ell}\exp(w_\ell^\top\operatorname{RMSNorm}(v_j))},
+\qquad
+h_\ell=\sum_{i<\ell}\alpha_{\ell i}v_i.
+$$
+
+query $w_\ell$ 是每个目标子层的可学习向量；key 来自历史输出的归一化表示，value 保留原输出。query 本身不依赖 token，但 key 依赖，因此权重可以逐 token 不同。softmax 归一化轴是**深度来源**，没有在这一步混合不同 token；序列 self-attention 仍在子层内部工作。[R06]
+
+Block AttnRes 把若干子层输出相加为 block 表示 $b_n$；目标子层可读 embedding、已完成 blocks 及当前 block 的非空 partial sum。它保留块内普通求和，跨块采用 attention。必须缓存子层的**新输出或其块和**，若把所有已经累加过的 hidden state 再当独立增量相加，会重复计算信息。[R06]
+
+### 代码或伪代码
+
+下面独立实现无可学习 RMSNorm scale 的教学聚合器。输入 source 可以是 Full 的输出列表，也可以是 Block 的块和；这是聚合 primitive，不是完整 Transformer。
+
+```python
+import numpy as np
+
+def depth_mix(sources, query, eps=1e-6):
+    # sources:[N,B,T,D], query:[D]; never softmax across T
+    values = np.asarray(sources)
+    if values.ndim != 4 or values.shape[0] == 0:
+        raise ValueError("sources must be nonempty [N,B,T,D]")
+    keys = values / np.sqrt(np.mean(values ** 2, axis=-1, keepdims=True) + eps)
+    logits = np.einsum("nbtd,d->nbt", keys, query)
+    weights = np.exp(logits - logits.max(axis=0, keepdims=True))
+    weights /= weights.sum(axis=0, keepdims=True)
+    output = np.einsum("nbt,nbtd->btd", weights, values)
+    return output, weights
+```
+
+### 技术取舍
+
+按单 token、总子层数 $L$、hidden $d$ 估算 Full 的聚合计算 $O(L^2d)$、保留来源状态 $O(Ld)$；推广到 batch 和序列需乘 $BT$。若 $N$ 个 blocks，来源状态降为 $O(Nd)$，聚合计算粗略为 $O(LNd)$。这是残差模块的额外成本，不能写成整个 Transformer 复杂度。
+
+depth attention 允许选择历史层，却改变了原有单位直通路径；不能自动继承普通残差的所有梯度性质。Block 降低保存与跨 pipeline 传输开销，但丢失块内单层选择精度。实际要看重计算策略、并行切分与算子融合，论文测得的开销不能直接移植到任意系统。[R06；复杂度展开为教学分析]
+
+### 深入追问
+
+#### 1. 所有 alpha 相等时，是不是恢复普通 residual？
+
+答：等权 softmax 是平均，普通残差是和，幅度不同。初始化 $w=0$ 得到等权平均，不能说数值完全恢复标准残差；需另有缩放或专门的参数化。
+
+#### 2. AttnRes 是否替代 self-attention？
+
+答：它改跨深度的聚合方式；self-attention 处理序列内部关系，两者可共存。Block 版本中普通求和仍用于块内，不能笼统说“整个模型取消残差”。
+
+#### 3. 它与一个 sigmoid gate 或 mHC 等价吗？
+
+答：不等价。单 gate 通常只控制当前分支/累计流，AttnRes 可对多个历史来源分别分配权重。mHC 属于另一种多流连接及混合约束方案，不能把它当 AttnRes 别名。比较需固定参数、训练预算与系统成本。
+
+### 研究来源
+
+- [R06](https://arxiv.org/pdf/2603.15031): Attention Residuals — Sections 2–3; equations 1–5; Figure 2（核对：2026-10-13）。
+
+## deepseek_v41_ced_csa2
+
+**面试官常问：**
+
+1. Causal Encoder–Decoder 为什么能减轻长输入 prefill，和双向 encoder 有何不同？
+2. CSA2 的 Full、Reindex、Reuse 到底共享什么？
+3. 分层 indexer 哪一步仍扫描全历史，为什么不能说全部变 O(1)？
+4. SWA bounded replay 是数学精确复用还是质量可控的近似？
+
+### 原理与关键公式
+
+答：这里 encoder 仍然是**因果**的。CED 把下半层作为 causal encoder，decoder 的 global KV 从 encoder 最终 hidden 通过投影取得；decoder 的局部 SWA KV 仍依赖各层自身状态。用报告的记号，$H^{L/2}$ 为 encoder 输出，decoder Full 层的全局条目及压缩权重来自：
+
+$$
+C_\ell=H^{L/2}W_\ell^{KV},\qquad
+Z_\ell=H^{L/2}W_\ell^{Z},\qquad \ell>L/2.
+$$
+
+长 prompt 主体因此主要经过 encoder，decoder 用有限窗口 replay 准备局部状态；生成新 token 仍要经过模型的生成路径。以“每 token 每层工作量”作**简化成本模型**，输入长度 $T\gg W$ 时：
+
+$$
+C_{\mathrm{prefill}}\sim T\frac L2+W\frac L2
++\text{global projections/indexing}.
+$$
+
+相较常规 $TL$ 可明显减少工作量；这不是完整 FLOPs 公式，不能忽略 attention、MoE、视觉及 cache miss 成本后宣称精确减半。[R07 §2.2]
+
+CSA2 把 global KV 共享与 sparse index 共享分开；模式按层静态分配，而不是每个 token 随意选择：[R07 §2.3]
+
+| 模式 | main KV / indexer K | indexer Q / Top-k | 当前层 main Q、SWA KV 与 attention 输出 |
+|---|---|---|---|
+| Full | 产生新表示 | 新建 Q，重新选索引 | 重新计算 |
+| Reindex | 复用对应旧表示 | 新建 Q，重新选索引 | 重新计算 |
+| Reuse | 复用对应旧表示 | 复用该 KV 对应的最近索引 | 重新计算 |
+
+Reuse **没有复用整个 attention 输出**。保存的索引必须与共享 KV 的版本、位置编号一致；更换 KV 源以后不可继续使用不匹配的旧索引。
+
+### 代码或伪代码
+
+以下原创伪代码展示状态依赖，省略 tensor/kernel 细节；candidate_pool 仅指 decoder 的分层索引域，encoder 使用全部因果可见位置：
+
+```pseudocode
+for layer in layers:
+    main_q, local_kv = project_current_layer(hidden)
+    if layer.mode == Full:
+        source = encoder_final if layer.in_decoder else hidden
+        main_kv, index_k = compress_and_project(source)
+        kv_version = new_version()
+        scores = score_all_causally_visible(layer.index_q(hidden), index_k)
+        index = topk(scores, kv_version)
+        candidate_pool = block_candidates(scores) if layer.in_decoder else ALL_VISIBLE
+    elif layer.mode == Reindex:
+        assert main_kv exists
+        index = reselect(layer.index_q(hidden), index_k, candidate_pool, kv_version)
+    elif layer.mode == Reuse:
+        assert index.kv_version == kv_version
+    hidden = attend_and_transform(main_q, main_kv[index], local_kv)
+```
+
+decoder 分层索引先由一个 Full 层扫描全局位置，按块分数建立比最终 Top-k 更大的候选池；后续 Reindex 在池内重新打分。设全局条目数 $M$，候选数 $C$，后续有 $R$ 次重索引，索引工作量可从约 $(R+1)M$ 改为：
+
+$$
+O(M+RC).
+$$
+
+这是固定打分维度和忽略选择算法常数后的**单 query 索引成本**。首层 $M$ 仍在，prefill 有多个 query；不能改写为整个网络、整个序列都是常数成本。过小候选池会漏掉深层需要的条目。[R07 §2.3.2]
+
+### 技术取舍
+
+SWA 跨层依赖扩展，精确重建可能需回放更长历史。bounded replay 只回放最近窗口，接受近似状态；即便报告实验质量损失很小，也不是对所有输入都等价。需要评估首次 decode、cache 命中位置、长间隔会话与局部检索。报告中的持久缓存节省还涉及移除 SSD 中 SWA 缓存、共享和精度，不能只归因于 CED。[R07 §3.2]
+
+与 MLA 的区别：MLA 主要压每 token 的表示维度；CSA2 还包含序列压缩、跨层共享及索引复用。缓存大小可粗略写为“保留层组 × 保留位置数 × 每条目维度 × dtype bytes”，再加本地窗口和元数据。这是资源核算分解，不能把各优化百分比不加条件地相乘。[R07,R16]
+
+### 深入追问
+
+#### 1. decoder 全局 KV 都来自 encoder，decoder 的深度还有用吗？
+
+答：每层 query、局部 SWA、FFN/MoE 和 hidden 转换仍在更新；共享 KV 不等于共享 query 或输出。尤其 Reindex 允许不同深度重新选择全局位置。
+
+#### 2. 候选池在不同 query 间能直接复用吗？
+
+答：不能由“跨层共享”推出“跨 query 共享”。报告描述的是对应 query 的跨索引层候选限制；应保留因果 mask，并核对压缩条目覆盖范围，防止使用包含未来 token 的未完成块。
+
+#### 3. 如何证明速度提升不是 cache 命中率差异造成的？
+
+答：控制输入输出长度、batch、精度、硬件与命中位置，分别报告冷启动 prefill、命中 prefill、decode 和端到端时延。对共享、索引和 replay 逐项消融，并同时报告质量。这是工程验证建议，不是本次已运行的模型实验。
+
+### 研究来源
+
+- [R07](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf): DeepSeek-V4.1-Flash Technical Report — Sections 2.2–2.3 and 3.2.1–3.2.2; Figures 4–5（核对：2026-10-13）。
+- [R16](https://www.deepseek.com/en/news/deepseek-v4-1-flash/): Introducing DeepSeek-V4.1-Flash — Architecture and cache savings（核对：2026-10-13）。

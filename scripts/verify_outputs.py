@@ -9,9 +9,11 @@ import re
 import subprocess
 import sys
 import argparse
+import ast
 from pathlib import Path
 
 from generate_notebook import TOPICS, read_detailed_answers
+from research_updates import MANIFEST, UPDATES, SOURCES, SOURCE_MAP, curated_answers, split_answers
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +39,10 @@ SCAN_PATHS = [
     ROOT / "docs",
     ROOT / "notes",
     ROOT / "data" / "processed",
+    ROOT / "data" / "research",
     ROOT / "scripts",
     ROOT / "skills",
+    ROOT / "tests",
 ]
 
 
@@ -147,6 +151,8 @@ def main() -> None:
             fail(f"sources.csv contains private favorite_order/collect_url values: {preview}")
 
     detailed_answers = read_detailed_answers()
+    # Detect duplicate sections before the legacy dict parser can hide them.
+    split_answers((ROOT / "data/processed/detailed_answers.md").read_text(encoding="utf-8"))
     expected_answer_keys = {topic.key for topic in TOPICS}
     actual_answer_keys = set(detailed_answers)
     if actual_answer_keys != expected_answer_keys:
@@ -169,6 +175,44 @@ def main() -> None:
     if master_text.count("```text") > 24:
         fail("too many text fences remain; formulas should use $$ display math")
 
+    questions = [re.sub(r"[\W_]+", "", t.question).casefold() for t in TOPICS]
+    if len(questions) != len(set(questions)):
+        fail("duplicate normalized topic questions")
+    if len(SOURCE_MAP) != len(SOURCES) or len({s["url"] for s in SOURCES}) != len(SOURCES):
+        fail("duplicate research source IDs or URLs")
+    if len(UPDATES) != len(MANIFEST["topics"]):
+        fail("duplicate research topic keys")
+    bank = (ROOT / "data/processed/question_bank.md").read_text(encoding="utf-8")
+    all_keys = {topic.key for topic in TOPICS}
+    curated = curated_answers()
+    for key, item in UPDATES.items():
+        if not set(item["sources"]) <= set(SOURCE_MAP):
+            fail(f"unknown research source for {key}")
+        if not set(item["related"]) <= all_keys:
+            fail(f"unknown related topic for {key}")
+        body = detailed_answers[key]
+        if body != curated[key] or body not in master_text:
+            fail(f"stale curated answer in generated output: {key}")
+        for marker in ["**面试官常问：**", "### 原理与关键公式", "### 代码或伪代码",
+                       "### 技术取舍", "### 深入追问", "$$"]:
+            if marker not in body:
+                fail(f"missing {marker} in {key}")
+        cited = set(re.findall(r"\bR\d{2}\b", body))
+        if cited != set(item["sources"]):
+            fail(f"research citations disagree with manifest for {key}: {sorted(cited)}")
+    for topic in TOPICS:
+        if master_text.count(f'<a id="{topic.key}"></a>') != 1:
+            fail(f"missing/duplicate master anchor: {topic.key}")
+        if bank.count(f"| {topic.question} |") != 1:
+            fail(f"missing/duplicate question bank row: {topic.key}")
+    python_blocks = 0
+    for key, body in detailed_answers.items():
+        if body.count("```") % 2 or body.count("$$") % 2:
+            fail(f"unbalanced code/math fences: {key}")
+        for index, code in enumerate(re.findall(r"```python\n(.*?)```", body, flags=re.S)):
+            ast.parse(code, filename=f"{key}:python:{index}")
+            python_blocks += 1
+
     raw_status = raw_ignore_status()
     if raw_status and not all(line.startswith("!! ") for line in raw_status):
         fail("data/raw has non-ignored files: " + "; ".join(raw_status))
@@ -178,8 +222,13 @@ def main() -> None:
         "extracted": len(sources),
         "relevant": relevant,
         "discover_relevant": discover_relevant,
-        "topics": summary["topics"],
+        "xhs_topics": summary["topics"],
+        "topics": len(TOPICS),
         "detailed_answers": len(detailed_answers),
+        "research_topics_added": sum(t["kind"] == "new" for t in UPDATES.values()),
+        "research_topics_expanded": sum(t["kind"] == "expand" for t in UPDATES.values()),
+        "research_sources": len(SOURCES),
+        "python_blocks_syntax_checked": python_blocks,
         "raw_ignored_entries": len(raw_status),
     }, ensure_ascii=False, indent=2))
 
