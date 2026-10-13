@@ -56,15 +56,21 @@ def read_sources() -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def scan_for_tokens() -> list[str]:
-    hits: list[str] = []
+def scan_files() -> list[Path]:
+    """Scan output files while excluding gitignored Python bytecode caches."""
     files: list[Path] = []
     for path in SCAN_PATHS:
-        if path.is_file():
-            files.append(path)
-        elif path.is_dir():
-            files.extend(p for p in path.rglob("*") if p.is_file())
-    for path in files:
+        candidates = [path] if path.is_file() else path.rglob("*")
+        files.extend(
+            p for p in candidates
+            if p.is_file() and p.suffix != ".pyc" and "__pycache__" not in p.parts
+        )
+    return files
+
+
+def scan_for_tokens() -> list[str]:
+    hits: list[str] = []
+    for path in scan_files():
         text = path.read_text(encoding="utf-8", errors="ignore")
         if TOKEN_RE.search(text):
             hits.append(str(path.relative_to(ROOT)))
@@ -73,13 +79,7 @@ def scan_for_tokens() -> list[str]:
 
 def scan_for_private_markers() -> list[str]:
     hits: list[str] = []
-    files: list[Path] = []
-    for path in SCAN_PATHS:
-        if path.is_file():
-            files.append(path)
-        elif path.is_dir():
-            files.extend(p for p in path.rglob("*") if p.is_file())
-    for path in files:
+    for path in scan_files():
         text = path.read_text(encoding="utf-8", errors="ignore")
         if PRIVATE_RE.search(text):
             hits.append(str(path.relative_to(ROOT)))
