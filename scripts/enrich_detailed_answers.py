@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 import generate_notebook
+from research_updates import curated_answers, sync_curated_answers
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1185,6 +1186,8 @@ def enrich_section(key: str, section: str, counts: Counter[str]) -> str:
 
 
 def main() -> None:
+    sync_curated_answers()
+    curated = curated_answers()
     text = DETAIL_PATH.read_text(encoding="utf-8")
     parts = re.split(r"(?m)^## ", text)
     header = parts[0].rstrip()
@@ -1200,7 +1203,8 @@ def main() -> None:
         if section is None:
             raise SystemExit(f"missing detailed answer section: {topic.key}")
         lines.append(f"## {topic.key}")
-        lines.append(enrich_section(topic.key, section, counts.get(topic.key, Counter())).rstrip())
+        lines.append(curated[topic.key] if topic.key in curated else
+                     enrich_section(topic.key, section, counts.get(topic.key, Counter())).rstrip())
         lines.append("")
     DETAIL_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     print(f"enriched {len(generate_notebook.TOPICS)} detailed answer sections")

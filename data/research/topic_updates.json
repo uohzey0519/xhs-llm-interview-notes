@@ -1,0 +1,154 @@
+{
+  "reviewed_at": "2026-10-13",
+  "baseline_commit": "b2925e12a4b1c79dfe467be1c3c74883de603c3f",
+  "topics": [
+    {
+      "key": "mla_deepseek",
+      "kind": "expand",
+      "question": "MLA 如何联合压缩 KV，矩阵吸收为什么成立，低秩是否无损？",
+      "category": "Attention 与 KV Cache",
+      "difficulty": "进阶",
+      "sources": [
+        "R03"
+      ],
+      "related": [
+        "gqa_kv_cache",
+        "rope_position"
+      ]
+    },
+    {
+      "key": "rope_position",
+      "kind": "expand",
+      "question": "RoPE 与 NoPE 如何编码位置，为什么 MLA 需要解耦 RoPE？",
+      "category": "位置编码",
+      "difficulty": "进阶",
+      "sources": [
+        "R03",
+        "R04",
+        "R05",
+        "R10"
+      ],
+      "related": [
+        "mla_deepseek"
+      ]
+    },
+    {
+      "key": "reward_advantage_prm",
+      "kind": "expand",
+      "question": "长程 Agent 的终局奖励、过程奖励和 token 级信用分配如何设计？",
+      "category": "后训练与强化学习",
+      "difficulty": "进阶",
+      "sources": [
+        "R01",
+        "R08",
+        "R09"
+      ],
+      "related": [
+        "grpo_core",
+        "agentic_rl_self_evolution"
+      ]
+    },
+    {
+      "key": "agentic_rl_self_evolution",
+      "kind": "expand",
+      "question": "长程 Agent RL、上下文压缩和自进化训练如何形成可验证闭环？",
+      "category": "后训练与强化学习",
+      "difficulty": "进阶",
+      "sources": [
+        "R01",
+        "R02",
+        "R08",
+        "R09",
+        "R12"
+      ],
+      "related": [
+        "glm_sao",
+        "reward_advantage_prm",
+        "agent_context_memory",
+        "distillation"
+      ]
+    },
+    {
+      "key": "agent_eval_observability",
+      "kind": "expand",
+      "question": "如何评估 Agent 的任务成功、重复可靠性、轨迹质量与真实改进？",
+      "category": "评估与对齐",
+      "difficulty": "进阶",
+      "sources": [
+        "R11",
+        "R12",
+        "R13"
+      ],
+      "related": [
+        "evaluation",
+        "grpo_metrics",
+        "agentic_rl_self_evolution"
+      ]
+    },
+    {
+      "key": "sparse_linear_attention",
+      "kind": "expand",
+      "question": "稀疏、线性、Delta Rule 与门控注意力分别改变什么，复杂度如何计算？",
+      "category": "Attention 与 KV Cache",
+      "difficulty": "进阶",
+      "sources": [
+        "R14",
+        "R15",
+        "R07"
+      ],
+      "related": [
+        "flash_attention",
+        "attention_residual",
+        "deepseek_v41_ced_csa2"
+      ]
+    },
+    {
+      "key": "glm_sao",
+      "kind": "new",
+      "question": "GLM 系列 SAO 如何用单轨迹异步优化缓解长程 Agent RL 的策略滞后？",
+      "category": "后训练与强化学习",
+      "difficulty": "深入",
+      "sources": [
+        "R01",
+        "R02",
+        "R08"
+      ],
+      "related": [
+        "grpo_core",
+        "reward_advantage_prm",
+        "agentic_rl_self_evolution"
+      ]
+    },
+    {
+      "key": "attention_residual",
+      "kind": "new",
+      "question": "Attention Residual 在深度方向聚合什么，Block AttnRes 如何节省开销？",
+      "category": "Transformer 基础",
+      "difficulty": "深入",
+      "sources": [
+        "R06"
+      ],
+      "related": [
+        "transformer_arch",
+        "norms",
+        "sparse_linear_attention"
+      ]
+    },
+    {
+      "key": "deepseek_v41_ced_csa2",
+      "kind": "new",
+      "question": "DeepSeek-V4.1-Flash 的 CED、CSA2 和分层索引如何协同降低推理成本？",
+      "category": "Attention 与 KV Cache",
+      "difficulty": "深入",
+      "sources": [
+        "R07",
+        "R16"
+      ],
+      "related": [
+        "mla_deepseek",
+        "inference_cache_speculative",
+        "deepseek_arch"
+      ]
+    }
+  ]
+}

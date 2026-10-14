@@ -23,3 +23,5 @@ data/raw/xhs_discover_targets_*.tsv
 data/raw/xhs_discover_run_state_*.json
 build/
 dist/
+__pycache__/
+*.pyc

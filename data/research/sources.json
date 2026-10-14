@@ -1,0 +1,162 @@
+[
+  {
+    "source_id": "R01",
+    "title": "Single-Rollout Asynchronous Optimization for Agentic Reinforcement Learning",
+    "url": "https://arxiv.org/html/2607.07508v1",
+    "version": "arXiv:2607.07508v1, 2026-07-08",
+    "locator": "Sections 3.1–3.2; equations 1–5; Section 4.1",
+    "supports": "SAO 全称、DIS、单轨迹、critic 训练与 skip-observation GAE；公开部署对象为 GLM-5.2",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R02",
+    "title": "GLM-5.3 official model card",
+    "url": "https://huggingface.co/zai-org/GLM-5.3",
+    "version": "model card accessed 2026-10-13",
+    "locator": "Introduction; benchmark footnotes",
+    "supports": "GLM-5.3 沿用 GLM-5.2 base，增益来自后训练；不能把整体增益归因于 SAO 单一组件",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R03",
+    "title": "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model",
+    "url": "https://arxiv.org/html/2405.04434v5",
+    "version": "arXiv:2405.04434v5",
+    "locator": "Section 2.1, Multi-Head Latent Attention and Decoupled Rotary Position Embedding",
+    "supports": "MLA 联合低秩 KV、矩阵吸收、解耦 RoPE；本文数值例为原创教学例",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R04",
+    "title": "RoFormer: Enhanced Transformer with Rotary Position Embedding",
+    "url": "https://arxiv.org/abs/2104.09864",
+    "version": "arXiv:2104.09864",
+    "locator": "Rotary position embedding formulation",
+    "supports": "旋转位置与相对内积；不构成任意长度泛化保证",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R05",
+    "title": "The Impact of Positional Encoding on Length Generalization in Transformers",
+    "url": "https://arxiv.org/abs/2305.19466v2",
+    "version": "arXiv:2305.19466v2, NeurIPS 2023",
+    "locator": "Abstract and stated scope of decoder-only length-generalization experiments",
+    "supports": "NoPE 不等于无法表达位置；论文实验范围不代表所有自然语言长上下文任务",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R06",
+    "title": "Attention Residuals",
+    "url": "https://arxiv.org/pdf/2603.15031",
+    "version": "arXiv:2603.15031, accessed 2026-10-13",
+    "locator": "Sections 2–3; equations 1–5; Figure 2",
+    "supports": "深度注意力、learned pseudo-query、key RMSNorm、Block AttnRes；实现为独立教学写法",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R07",
+    "title": "DeepSeek-V4.1-Flash Technical Report",
+    "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf",
+    "version": "September 2026 report",
+    "locator": "Sections 2.2–2.3 and 3.2.1–3.2.2; Figures 4–5",
+    "supports": "CED、Full/Reindex/Reuse、decoder 分层索引、SWA bounded replay 为近似",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R08",
+    "title": "Proximal Policy Optimization Algorithms",
+    "url": "https://arxiv.org/abs/1707.06347",
+    "version": "arXiv:1707.06347",
+    "locator": "Clipped surrogate objective",
+    "supports": "PPO clipping 与策略梯度背景；不等同于 SAO 的双侧 masking",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R09",
+    "title": "High-Dimensional Continuous Control Using Generalized Advantage Estimation",
+    "url": "https://arxiv.org/abs/1506.02438",
+    "version": "arXiv:1506.02438",
+    "locator": "Generalized advantage estimation",
+    "supports": "TD residual 和 GAE 的偏差方差取舍；Agent 数值例为本文推导",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R10",
+    "title": "YaRN: Efficient Context Window Extension of Large Language Models",
+    "url": "https://arxiv.org/abs/2309.00071",
+    "version": "arXiv:2309.00071v3",
+    "locator": "RoPE context extension; interpolation and scaling motivation",
+    "supports": "RoPE 扩长与频率/attention scaling 背景，不表示任意模型都使用相同配置",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R11",
+    "title": "tau-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains",
+    "url": "https://arxiv.org/html/2406.12045v1",
+    "version": "arXiv:2406.12045v1",
+    "locator": "Sections 3 and 5; pass^k reliability metric",
+    "supports": "环境终态验证与重复运行可靠性；组合估计量代码为原创",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R12",
+    "title": "Demystifying evals for AI agents",
+    "url": "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents",
+    "version": "2026-01-09",
+    "locator": "Tasks, trials, graders, outcomes; capability and regression evaluation",
+    "supports": "Agent 评测构件和 grader 校准；本文预算控制与因果归因方案为工程建议",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R13",
+    "title": "Evaluating Large Language Models Trained on Code",
+    "url": "https://arxiv.org/abs/2107.03374",
+    "version": "arXiv:2107.03374",
+    "locator": "pass@k estimator",
+    "supports": "至少一次成功的 pass@k，与连续可靠成功的 pass^k 区分",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R14",
+    "title": "Gated Delta Networks: Improving Mamba2 with Delta Rule",
+    "url": "https://arxiv.org/abs/2412.06464",
+    "version": "arXiv:2412.06464",
+    "locator": "Gated delta rule recurrence",
+    "supports": "遗忘门与误差校正写入的不同角色；二维 key 例为本文构造",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R15",
+    "title": "Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention",
+    "url": "https://proceedings.mlr.press/v119/katharopoulos20a.html",
+    "version": "ICML 2020",
+    "locator": "Causal linear attention and recurrent formulation",
+    "supports": "核化线性注意力的状态和归一化分母",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  },
+  {
+    "source_id": "R16",
+    "title": "Introducing DeepSeek-V4.1-Flash",
+    "url": "https://www.deepseek.com/en/news/deepseek-v4-1-flash/",
+    "version": "2026-09-10",
+    "locator": "Architecture and cache savings",
+    "supports": "官方发布与技术报告入口；系统缓存数字不作为所有配置下的理论定律",
+    "status": "primary-reviewed",
+    "accessed": "2026-10-13"
+  }
+]
